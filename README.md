@@ -6,3 +6,9 @@
 **Dataset:** [Zenodo Dataset URL](https://zenodo.org/records/18491212).
 
 **How to run?** After downloading and extracting the dataset, place it in the same folder, then simply run the corresponding `.py` file.
+
+**SL-IBPM Model:**
+
+`
+python ibpm.py
+`

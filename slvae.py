@@ -3,15 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score
-from torch.utils.data import DataLoader
 from torch_scatter import scatter
+from utils import load_data, SEEDS, compute_stats, save_csv
 
-from util import load_data
 
-
-# --------------------------------------------------
-# 1. 网络结构
-# --------------------------------------------------
 class Encoder(nn.Module):
     def __init__(self, in_dim: int, hid: int = 128, z_dim: int = 32):
         super().__init__()
@@ -74,10 +69,6 @@ class DiffusionPropagate(nn.Module):
 
 
 class GNN(nn.Module):
-    """
-    把 VAE 重构出的 x_hat 进一步映射到节点级概率
-    """
-
     def __init__(self, n_nodes: int):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -89,10 +80,6 @@ class GNN(nn.Module):
 
 
 class SLVAE(nn.Module):
-    """
-    完整模型：VAE + GNN + Diffusion
-    """
-
     def __init__(self, n_nodes: int, edge_index: torch.Tensor):
         super().__init__()
         self.vae = VAE(n_nodes)
@@ -100,11 +87,10 @@ class SLVAE(nn.Module):
         self.diffusion = DiffusionPropagate(edge_index)
 
     def forward(self, x):
-        # x : (batch, n_nodes, 1)
-        x = 1 - x[..., 0]  # (batch, n_nodes)
+        x = 1 - x[..., 0]
         x_hat, mu, logvar = self.vae(x)
-        p0 = self.gnn(x_hat)  # (batch, n_nodes)
-        y_hat = self.diffusion(p0)  # (batch, n_nodes)
+        p0 = self.gnn(x_hat)
+        y_hat = self.diffusion(p0)
         return x_hat, mu, logvar, y_hat
 
     @staticmethod
@@ -117,19 +103,13 @@ class SLVAE(nn.Module):
 
 
 class SLVAETrainer:
-
     def __init__(self, model: SLVAE, lr: float, device: str):
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.estimator = model.loss
 
-    def train_step(
-        self,
-        train_loader: DataLoader,
-        mask: list | None = None,
-    ) -> float:
-        """训练步"""
+    def train_step(self, train_loader, mask=None):
         total_loss = 0.0
         for x, y in train_loader:
             x, y = x.to(self.device), y.to(self.device)
@@ -143,12 +123,7 @@ class SLVAETrainer:
             total_loss += loss.item()
         return total_loss / len(train_loader)
 
-    def valid_step(
-        self,
-        valid_loader: DataLoader,
-        mask: list | None = None,
-    ) -> float:
-        """验证步"""
+    def valid_step(self, valid_loader, mask=None):
         total_loss = 0.0
         with torch.no_grad():
             for x, y in valid_loader:
@@ -160,16 +135,8 @@ class SLVAETrainer:
                 total_loss += loss.item()
         return total_loss / len(valid_loader)
 
-    def test_step(
-        self,
-        test_loader: DataLoader,
-        mask: list | None = None,
-    ):
-        """测试步"""
-        auroc_list = []
-        precision_list = []
-        recall_list = []
-        f1_list = []
+    def test_step(self, test_loader, mask=None):
+        auroc_list, precision_list, recall_list, f1_list = [], [], [], []
         with torch.no_grad():
             for x, y in test_loader:
                 x, y = x.to(self.device), y.to(self.device)
@@ -178,238 +145,105 @@ class SLVAETrainer:
                 _, _, _, y_hat = self.model(x)
                 y_hat = y_hat.reshape(-1).cpu().numpy()
                 y = y.reshape(-1).cpu().numpy()
-                auroc = roc_auc_score(y, y_hat)
-                y_hat = (y_hat > 0.5).float()
-                precision = precision_score(y, y_hat)
-                recall = recall_score(y, y_hat)
-                f1 = f1_score(y, y_hat)
-                auroc_list.append(auroc)
-                precision_list.append(precision)
-                recall_list.append(recall)
-                f1_list.append(f1)
+                auroc_list.append(roc_auc_score(y, y_hat))
+                y_hat = (y_hat > 0.5).astype(int)
+                precision_list.append(precision_score(y, y_hat, zero_division=0))
+                recall_list.append(recall_score(y, y_hat, zero_division=0))
+                f1_list.append(f1_score(y, y_hat, zero_division=0))
         return (
-            np.mean(auroc_list),
-            np.mean(precision_list),
-            np.mean(recall_list),
-            np.mean(f1_list),
+            float(np.mean(auroc_list)),
+            float(np.mean(precision_list)),
+            float(np.mean(recall_list)),
+            float(np.mean(f1_list)),
         )
 
-    def fit(
-        self,
-        train_loader: DataLoader,
-        valid_loader: DataLoader,
-        epochs: int,
-        mask: list | None = None,
-    ) -> None:
+    def fit(self, train_loader, valid_loader, epochs, mask=None):
         for epoch in range(epochs):
             self.model.train()
             train_loss = self.train_step(train_loader, mask)
             self.model.eval()
             valid_loss = self.valid_step(valid_loader, mask)
-            print(
-                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}"
-            )
+            if epoch % 10 == 0:
+                print(
+                    f"Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}"
+                )
 
-    def evaluate(
-        self,
-        test_loader: DataLoader,
-        mask: list | None = None,
-    ):
-        """评估模型"""
+    def evaluate(self, test_loader, mask=None):
         self.model.eval()
-        auroc, precision, recall, f1 = self.test_step(test_loader, mask)
-        return auroc, precision, recall, f1
+        return self.test_step(test_loader, mask)
 
 
-def train_slvae(
-    file_name: str,
-    type_: str,
-    epochs: int = 100,
-    lr: float = 0.001,
-    device: str = "cuda:0",
-):
-    """训练SLVAE模型"""
-    (
-        train_loader,
-        valid_loader,
-        test_loader,
-        edge_index,
-        num_nodes,
-        _,
-        _,
-    ) = load_data(file_name, type_)
-
-    auroc_list = []
-    precision_list = []
-    recall_list = []
-    f1_list = []
-    for _ in range(4):
-        model = SLVAE(num_nodes, edge_index)
-        trainer = SLVAETrainer(
-            model=model,
-            lr=lr,
-            device=device,
-        )
-        trainer.fit(train_loader, valid_loader, epochs)
-        auroc, precision, recall, f1 = trainer.evaluate(test_loader)
-        auroc_list.append(auroc)
-        precision_list.append(precision)
-        recall_list.append(recall)
-        f1_list.append(f1)
-
-    return (
-        np.mean(auroc_list),
-        np.mean(precision_list),
-        np.mean(recall_list),
-        np.mean(f1_list),
+def train_slvae(file_name: str, type_: str, epochs=100, lr=0.001, device="cuda:0"):
+    train_loader, valid_loader, test_loader, edge_index, num_nodes, _, _ = load_data(
+        file_name, type_
     )
-
-
-# def train_cascade(
-#     file_name: str,
-#     epochs: int = 100,
-#     lr: float = 0.001,
-#     device: str = "cuda:0",
-# ):
-#     """训练SLVAE模型"""
-#     (
-#         train_loader,
-#         valid_loader,
-#         test_loader,
-#         edge_index,
-#         num_nodes,
-#         _,
-#         _,
-#     ) = get_true_cascade_dataset(file_name)
-
-#     time_list = []
-#     roc_list = []
-#     prc_list = []
-#     for _ in range(4):
-#         start_time = time.time()
-#         model = SLVAE(num_nodes, edge_index)
-#         trainer = SLVAETrainer(
-#             model=model,
-#             lr=lr,
-#             device=device,
-#         )
-#         trainer.fit(train_loader, valid_loader, epochs)
-#         auroc, auprc = trainer.evaluate(test_loader)
-#         end_time = time.time()
-#         time_list.append(end_time - start_time)
-#         roc_list.append(auroc)
-#         prc_list.append(auprc)
-
-#     avg_time = sum(time_list[1:]) / (4 - 1)
-#     roc_avg, roc_std = calculate_stats(roc_list)
-#     prc_avg, prc_std = calculate_stats(prc_list)
-
-#     return avg_time, roc_avg, roc_std, prc_avg, prc_std
+    auc_list, pre_list, rec_list, f1_list = [], [], [], []
+    for seed in SEEDS:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        model = SLVAE(num_nodes, edge_index)
+        trainer = SLVAETrainer(model=model, lr=lr, device=device)
+        trainer.fit(train_loader, valid_loader, epochs)
+        auc, pre, rec, f1 = trainer.evaluate(test_loader)
+        auc_list.append(auc)
+        pre_list.append(pre)
+        rec_list.append(rec)
+        f1_list.append(f1)
+    return {
+        "auc_mean": compute_stats(auc_list)[0],
+        "auc_std": compute_stats(auc_list)[1],
+        "pre_mean": compute_stats(pre_list)[0],
+        "pre_std": compute_stats(pre_list)[1],
+        "rec_mean": compute_stats(rec_list)[0],
+        "rec_std": compute_stats(rec_list)[1],
+        "f1_mean": compute_stats(f1_list)[0],
+        "f1_std": compute_stats(f1_list)[1],
+    }
 
 
 def main():
     file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
     type_list = ["SIR", "SI", "LT", "IC"]
-    result = {}
-
+    results = {}
     for name in file_list:
         for type_ in type_list:
-            auc, precision, recall, f1 = train_slvae(
-                file_name=name,
-                type_=type_,
-            )
-            result[(name, type_)] = {
-                "auc": auc,
-                "precision": precision,
-                "recall": recall,
-                "f1": f1,
-            }
-
-    with open("result/SLVAE.txt", "w") as f:
-        f.write("Summary of all experiments using SLVAE:\n")
-        for (name, type_), metrics in result.items():
-            f.write(f"{name} ({type_}): ")
-            f.write(
-                f"{name} ({type_}): "
-                f"AUROC: {metrics["auc"]:.4f}, "
-                f"Precision: {metrics["precision"]:.4f}, "
-                f"Recall: {metrics["recall"]:.4f}, "
-                f"F1: {metrics["f1"]:.4f}\n"
-            )
+            metrics = train_slvae(file_name=name, type_=type_)
+            results[(name, type_)] = metrics
+    save_csv(results, "result/SLVAE.csv")
 
 
-# def partial():
-#     file_list = ["karate", "jazz", "net_science", "cora_ml"]
-#     type_ = "SIR"
-#     result = {}
+def cascade_study(device="cuda:0", epochs=100):
+    from utils import get_true_cascade_dataset
 
-#     for name in file_list:
-#         (
-#             train_loader,
-#             valid_loader,
-#             test_loader,
-#             edge_index,
-#             num_nodes,
-#             _,
-#             _,
-#         ) = load_data(name, type_)
-#         with open(f"data/{type_}/{name}/dict_observe.pkl", "rb") as f:
-#             dict_observe = pkl.load(f)
-#         for i in range(1, 10):
-#             observe = list(dict_observe[i])
-#             roc_list = []
-#             for _ in range(4):
-#                 model = SLVAE(num_nodes, edge_index)
-#                 trainer = SLVAETrainer(
-#                     model=model,
-#                     lr=0.001,
-#                     device="cuda:0",
-#                 )
-#                 trainer.fit(
-#                     train_loader,
-#                     valid_loader,
-#                     100,
-#                     mask=observe,
-#                 )
-#                 auroc, _ = trainer.evaluate(
-#                     test_loader,
-#                     mask=observe,
-#                 )
-#                 roc_list.append(auroc)
-#             roc_avg, _ = calculate_stats(roc_list)
-#             result[(name, i)] = roc_avg
-
-#     with open("./partial_slvae.txt", "w") as f:
-#         for (name, i), metrics in result.items():
-#             f.write(f"{name}-Mask{i}0%: " f"AUROC: {metrics:.4f}\n")
-
-
-# def cascade_study():
-#     file_list = ["douban", "twitter"]
-#     result = {}
-
-#     for name in file_list:
-#         avg_time, roc_avg, roc_std, prc_avg, prc_std = train_cascade(
-#             file_name=name,
-#         )
-#         result[name] = {
-#             "time": avg_time,
-#             "roc": (roc_avg, roc_std),
-#             "prc": (prc_avg, prc_std),
-#         }
-
-#     with open("./cascade_slvae.txt", "w") as f:
-#         f.write("Summary of all experiments using SLVAE:\n")
-#         for name, metrics in result.items():
-#             f.write(
-#                 f"{name}: "
-#                 f"Time: {metrics['time']:.4f}s, "
-#                 f"AUROC: {metrics['roc'][0]:.4f} ± {metrics['roc'][1]:.4f}, "
-#                 f"AUPRC: {metrics['prc'][0]:.4f} ± {metrics['prc'][1]:.4f}\n"
-#             )
+    file_list = ["android", "christianity", "douban", "twitter"]
+    results = {}
+    for name in file_list:
+        train_ld, valid_ld, test_ld, ei, N, _, _ = get_true_cascade_dataset(name)
+        auc_list, pre_list, rec_list, f1_list = [], [], [], []
+        for seed in SEEDS:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            model = SLVAE(N, ei)
+            trainer = SLVAETrainer(model, lr=0.001, device=device)
+            trainer.fit(train_ld, valid_ld, epochs)
+            auc, pre, rec, f1 = trainer.evaluate(test_ld)
+            auc_list.append(auc)
+            pre_list.append(pre)
+            rec_list.append(rec)
+            f1_list.append(f1)
+        results[(name, "cascade")] = {
+            "auc_mean": compute_stats(auc_list)[0],
+            "auc_std": compute_stats(auc_list)[1],
+            "pre_mean": compute_stats(pre_list)[0],
+            "pre_std": compute_stats(pre_list)[1],
+            "rec_mean": compute_stats(rec_list)[0],
+            "rec_std": compute_stats(rec_list)[1],
+            "f1_mean": compute_stats(f1_list)[0],
+            "f1_std": compute_stats(f1_list)[1],
+        }
+    save_csv(results, "result/SLVAE_cascade.csv")
 
 
 if __name__ == "__main__":
     main()
-    # partial()
-    # cascade_study()
+    cascade_study()

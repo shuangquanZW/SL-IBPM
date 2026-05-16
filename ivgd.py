@@ -1,43 +1,29 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from torch_geometric.nn import GCNConv
 import numpy as np
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score
-from util import load_data, get_true_cascade_dataset
+from utils import load_data, SEEDS, compute_stats, save_csv
 
 
 class InvertibleGraphResidualNet(nn.Module):
-    """
-    可逆图残差网络，确保 Lipschitz 常数 < 1
-    """
-
     def __init__(self, in_dim, hidden=64):
         super().__init__()
         self.f = nn.Sequential(
             nn.Linear(in_dim, hidden),
-            nn.Tanh(),  # 保证 Lipschitz < 1
+            nn.Tanh(),
             nn.Linear(hidden, in_dim),
         )
         self.g1 = GCNConv(in_dim, hidden)
         self.g2 = GCNConv(hidden, in_dim)
-        self._lipschitz_clip()
-
-    def _lipschitz_clip(self):
-        """简单裁剪权重，近似 Lipschitz 约束"""
+        # apply spectral norm
         for m in self.f:
             if isinstance(m, nn.Linear):
                 nn.utils.spectral_norm(m)
-        for m in [self.g1, self.g2]:
-            if isinstance(m, GCNConv):
-                nn.utils.spectral_norm(m.lin)
+        nn.utils.spectral_norm(self.g1.lin)
+        nn.utils.spectral_norm(self.g2.lin)
 
     def forward(self, y, edge_index, iters=3):
-        """
-        固定点迭代求逆
-        y = (g(z) + z) / 2  =>  z = 2y - g(z)
-        x = 2z - f(x)
-        """
         z = y
         for _ in range(iters):
             z = 2 * y - torch.tanh(self.g2(self.g1(z, edge_index), edge_index))
@@ -80,25 +66,17 @@ class IVGD(nn.Module):
         z = y_T
         for l in self.compensators:
             z = l(z)
-        x_hat = z
-        return self.predict(x_hat).squeeze(-1)
+        return self.predict(z).squeeze(-1)
 
 
 class IVGDTrainer:
-
     def __init__(self, model: IVGD, lr: float, reduction: str, device: str):
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.estimator = nn.BCELoss(reduction=reduction)
 
-    def train_step(
-        self,
-        train_loader: DataLoader,
-        edge_index,
-        mask: list | None = None,
-    ) -> float:
-        """训练步"""
+    def train_step(self, train_loader, edge_index, mask=None):
         edge_index = edge_index.to(self.device)
         total_loss = 0.0
         for x, y in train_loader:
@@ -113,13 +91,7 @@ class IVGDTrainer:
             total_loss += loss.item()
         return total_loss / len(train_loader)
 
-    def valid_step(
-        self,
-        valid_loader: DataLoader,
-        edge_index,
-        mask: list | None = None,
-    ) -> float:
-        """验证步"""
+    def valid_step(self, valid_loader, edge_index, mask=None):
         edge_index = edge_index.to(self.device)
         total_loss = 0.0
         with torch.no_grad():
@@ -132,219 +104,117 @@ class IVGDTrainer:
                 total_loss += loss.item()
         return total_loss / len(valid_loader)
 
-    def test_step(
-        self,
-        test_loader: DataLoader,
-        edge_index,
-        mask: list | None = None,
-    ):
-        """测试步"""
+    def test_step(self, test_loader, edge_index, mask=None):
         edge_index = edge_index.to(self.device)
-        auroc_list = []
-        precision_list = []
-        recall_list = []
-        f1_list = []
+        auroc_list, precision_list, recall_list, f1_list = [], [], [], []
         with torch.no_grad():
             for x, y in test_loader:
                 x, y = x.to(self.device), y.to(self.device)
                 if mask:
                     x[:, mask, :] = 0
-                y_hat = self.model(x, edge_index)
-                y_hat = y_hat.reshape(-1).cpu().numpy()
+                y_hat = self.model(x, edge_index).reshape(-1).cpu().numpy()
                 y = y.reshape(-1).cpu().numpy()
-                auroc = roc_auc_score(y, y_hat)
-                y_hat = (y_hat > 0.5).float()
-                precision = precision_score(y, y_hat)
-                recall = recall_score(y, y_hat)
-                f1 = f1_score(y, y_hat)
-                auroc_list.append(auroc)
-                precision_list.append(precision)
-                recall_list.append(recall)
-                f1_list.append(f1)
+                auroc_list.append(roc_auc_score(y, y_hat))
+                y_hat = (y_hat > 0.5).astype(int)
+                precision_list.append(precision_score(y, y_hat, zero_division=0))
+                recall_list.append(recall_score(y, y_hat, zero_division=0))
+                f1_list.append(f1_score(y, y_hat, zero_division=0))
         return (
-            np.mean(auroc_list),
-            np.mean(precision_list),
-            np.mean(recall_list),
-            np.mean(f1_list),
+            float(np.mean(auroc_list)),
+            float(np.mean(precision_list)),
+            float(np.mean(recall_list)),
+            float(np.mean(f1_list)),
         )
 
-    def fit(
-        self,
-        train_loader: DataLoader,
-        valid_loader: DataLoader,
-        edge_index,
-        epochs: int,
-        mask: list | None = None,
-    ) -> None:
+    def fit(self, train_loader, valid_loader, edge_index, epochs, mask=None):
         for epoch in range(epochs):
             self.model.train()
             train_loss = self.train_step(train_loader, edge_index, mask)
             self.model.eval()
             valid_loss = self.valid_step(valid_loader, edge_index, mask)
-            print(
-                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}"
-            )
+            if epoch % 10 == 0:
+                print(
+                    f"Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}"
+                )
 
-    def evaluate(
-        self,
-        test_loader: DataLoader,
-        edge_index,
-        mask: list | None = None,
-    ):
-        """评估模型"""
+    def evaluate(self, test_loader, edge_index, mask=None):
         self.model.eval()
         return self.test_step(test_loader, edge_index, mask)
 
 
 def train_ivgd(
-    file_name: str,
-    type_: str,
-    epochs: int = 100,
-    lr: float = 0.001,
-    reduction: str = "mean",
-    device: str = "cuda:0",
+    file_name: str, type_: str, epochs=100, lr=0.001, reduction="mean", device="cuda:0"
 ):
-    """训练IVGD模型"""
-    (
-        train_loader,
-        valid_loader,
-        test_loader,
-        edge_index,
-        _,
-        _,
-        states,
-    ) = load_data(file_name, type_)
-
-    auroc_list = []
-    precision_list = []
-    recall_list = []
-    f1_list = []
-    for _ in range(10):
-        model = IVGD(states)
-        trainer = IVGDTrainer(
-            model=model,
-            lr=lr,
-            reduction=reduction,
-            device=device,
-        )
-        trainer.fit(train_loader, valid_loader, edge_index, epochs)
-        auroc, precision, recall, f1 = trainer.evaluate(test_loader, edge_index)
-        auroc_list.append(auroc)
-        precision_list.append(precision)
-        recall_list.append(recall)
-        f1_list.append(f1)
-
-    return (
-        np.mean(auroc_list),
-        np.mean(precision_list),
-        np.mean(recall_list),
-        np.mean(f1_list),
+    train_loader, valid_loader, test_loader, edge_index, _, _, states = load_data(
+        file_name, type_
     )
-
-
-def train_cascade(
-    file_name: str,
-    epochs: int = 100,
-    lr: float = 0.001,
-    reduction: str = "mean",
-    device: str = "cuda:0",
-):
-    """训练IVGD模型"""
-    (
-        train_loader,
-        valid_loader,
-        test_loader,
-        edge_index,
-        _,
-        _,
-        states,
-    ) = get_true_cascade_dataset(file_name)
-
-    auroc_list = []
-    precision_list = []
-    recall_list = []
-    f1_list = []
-    for _ in range(2):
+    auc_list, pre_list, rec_list, f1_list = [], [], [], []
+    for seed in SEEDS:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
         model = IVGD(states)
-        trainer = IVGDTrainer(
-            model=model,
-            lr=lr,
-            reduction=reduction,
-            device=device,
-        )
+        trainer = IVGDTrainer(model=model, lr=lr, reduction=reduction, device=device)
         trainer.fit(train_loader, valid_loader, edge_index, epochs)
-        auroc, precision, recall, f1 = trainer.evaluate(test_loader, edge_index)
-        auroc_list.append(auroc)
-        precision_list.append(precision)
-        recall_list.append(recall)
+        auc, pre, rec, f1 = trainer.evaluate(test_loader, edge_index)
+        auc_list.append(auc)
+        pre_list.append(pre)
+        rec_list.append(rec)
         f1_list.append(f1)
-
-    return (
-        np.mean(auroc_list),
-        np.mean(precision_list),
-        np.mean(recall_list),
-        np.mean(f1_list),
-    )
+    return {
+        "auc_mean": compute_stats(auc_list)[0],
+        "auc_std": compute_stats(auc_list)[1],
+        "pre_mean": compute_stats(pre_list)[0],
+        "pre_std": compute_stats(pre_list)[1],
+        "rec_mean": compute_stats(rec_list)[0],
+        "rec_std": compute_stats(rec_list)[1],
+        "f1_mean": compute_stats(f1_list)[0],
+        "f1_std": compute_stats(f1_list)[1],
+    }
 
 
 def main():
     file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
     type_list = ["SIR", "SI", "LT", "IC"]
-    result = {}
-
+    results = {}
     for name in file_list:
         for type_ in type_list:
-            auc, precision, recall, f1 = train_ivgd(
-                file_name=name,
-                type_=type_,
-            )
-            result[(name, type_)] = {
-                "auc": auc,
-                "precision": precision,
-                "recall": recall,
-                "f1": f1,
-            }
-
-    with open("result/IVGD.txt", "w") as f:
-        f.write("Summary of all experiments using IVGD:\n")
-        for (name, type_), metrics in result.items():
-            f.write(f"{name} ({type_}): ")
-            f.write(
-                f"{name} ({type_}): "
-                f"AUROC: {metrics["auc"]:.4f}, "
-                f"Precision: {metrics["precision"]:.4f}, "
-                f"Recall: {metrics["recall"]:.4f}, "
-                f"F1: {metrics["f1"]:.4f}\n"
-            )
+            metrics = train_ivgd(file_name=name, type_=type_)
+            results[(name, type_)] = metrics
+    save_csv(results, "result/IVGD.csv")
 
 
-def cascade_study():
-    file_list = ["douban", "twitter"]
-    result = {}
+def cascade_study(device="cuda:0", epochs=100):
+    from utils import get_true_cascade_dataset
 
+    file_list = ["android", "christianity", "douban", "twitter"]
+    results = {}
     for name in file_list:
-        auc, precision, recall, f1 = train_cascade(
-            file_name=name,
-        )
-        result[name] = {
-            "auc": auc,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
+        train_ld, valid_ld, test_ld, ei, _, _, states = get_true_cascade_dataset(name)
+        auc_list, pre_list, rec_list, f1_list = [], [], [], []
+        for seed in SEEDS:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            model = IVGD(states)
+            trainer = IVGDTrainer(model, lr=0.001, reduction="mean", device=device)
+            trainer.fit(train_ld, valid_ld, ei, epochs)
+            auc, pre, rec, f1 = trainer.evaluate(test_ld, ei)
+            auc_list.append(auc)
+            pre_list.append(pre)
+            rec_list.append(rec)
+            f1_list.append(f1)
+        results[(name, "cascade")] = {
+            "auc_mean": compute_stats(auc_list)[0],
+            "auc_std": compute_stats(auc_list)[1],
+            "pre_mean": compute_stats(pre_list)[0],
+            "pre_std": compute_stats(pre_list)[1],
+            "rec_mean": compute_stats(rec_list)[0],
+            "rec_std": compute_stats(rec_list)[1],
+            "f1_mean": compute_stats(f1_list)[0],
+            "f1_std": compute_stats(f1_list)[1],
         }
-
-    with open("result/IVGD_cascade.txt", "w") as f:
-        f.write("True cascade experiments using IVGD:\n")
-        for name, metrics in result.items():
-            f.write(f"{name}: ")
-            f.write(
-                f"{name}: "
-                f"AUROC: {metrics["auc"]:.4f}, "
-                f"Precision: {metrics["precision"]:.4f}, "
-                f"Recall: {metrics["recall"]:.4f}, "
-                f"F1: {metrics["f1"]:.4f}\n"
-            )
+    save_csv(results, "result/IVGD_cascade.csv")
 
 
 if __name__ == "__main__":
     main()
+    # cascade_study(device="cuda:1")

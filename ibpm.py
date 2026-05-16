@@ -1,26 +1,24 @@
-"""信息反向传播机理实现"""
-
-import numpy as np
-from sklearn.metrics import (
-    roc_auc_score,
-    precision_score,
-    recall_score,
-    f1_score,
-)
-
+import csv
 import torch
-from torch import nn, Tensor
+import torch.nn as nn
+import numpy as np
+from torch import Tensor
 from torch.nn import init
 from torch.utils.data import DataLoader
 from torch_geometric.utils import add_self_loops
 from torch_scatter import scatter
+from sklearn.metrics import (
+    f1_score,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+)
+import os
 
-from util import load_data, get_true_cascade_dataset
+from utils import SEEDS, compute_stats, save_csv, load_data, get_true_cascade_dataset
 
 
 class BackPropagation(nn.Module):
-    """反向传播模块"""
-
     def __init__(
         self,
         num_nodes: int,
@@ -34,20 +32,14 @@ class BackPropagation(nn.Module):
         self.num_states = num_states
         self.required_self_loops = required_self_loops
 
-        if required_self_loops:
-            feature_size = num_edges + num_nodes
-        else:
-            feature_size = num_edges
+        feature_size = num_edges + num_nodes if required_self_loops else num_edges
         self.linear_weight = nn.Parameter(torch.empty((2, feature_size)))
-
         self.r_damp = nn.Parameter(torch.empty(num_nodes))
         self.i_damp = nn.Parameter(torch.empty(num_nodes))
         self.epsilon = nn.Parameter(torch.empty(2, num_nodes))
-
         self.init_parameters()
 
     def init_parameters(self) -> None:
-        """初始化参数"""
         init.xavier_normal_(self.linear_weight)
         init.normal_(self.r_damp)
         init.normal_(self.i_damp)
@@ -56,8 +48,7 @@ class BackPropagation(nn.Module):
     def r2i(
         self, recovery: Tensor, infect: Tensor, src: Tensor, dst: Tensor
     ) -> tuple[Tensor, Tensor]:
-        recovery = recovery - recovery * self.r_damp  # R态自身损失的信息
-        # R态将自身的信息按照一定比例传播给I态
+        recovery = recovery - recovery * self.r_damp
         r_i_delta = recovery[:, src] * self.linear_weight[0]
         r_i_delta = scatter(r_i_delta, dst, reduce="sum") + self.epsilon[0]
         r_i_delta = torch.relu(infect * r_i_delta)
@@ -66,38 +57,30 @@ class BackPropagation(nn.Module):
     def i2s(
         self, infect: Tensor, susceptible: Tensor, src: Tensor, dst: Tensor
     ) -> tuple[Tensor, Tensor]:
-        infect = infect - infect * self.i_damp  # I态自身损失的信息
-        # I态将自身的信息按照一定比例传播给S态
+        infect = infect - infect * self.i_damp
         i_s_delta = infect[:, src] * self.linear_weight[1]
         i_s_delta = scatter(i_s_delta, dst, reduce="sum") + self.epsilon[1]
         i_s_delta = torch.relu(susceptible * i_s_delta)
         return infect, i_s_delta + susceptible
 
     def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
-        """信息反向传播过程"""
         if self.required_self_loops:
-            edge_index, _ = add_self_loops(
-                edge_index,
-                num_nodes=self.num_nodes,
-            )
-
+            edge_index, _ = add_self_loops(edge_index, num_nodes=self.num_nodes)
         src, dst = edge_index
-        if self.num_states == 3:
-            susceptible, infect, recovery = x[:, :, 0], x[:, :, 1], x[:, :, 2]
-            recovery, infect = self.r2i(recovery, infect, src, dst)
-            infect, susceptible = self.i2s(infect, susceptible, src, dst)
-            out = torch.stack((susceptible, infect, recovery), dim=2)
-        else:
-            susceptible, infect = x[:, :, 0], x[:, :, 1]
-            infect, susceptible = self.i2s(infect, susceptible, src, dst)
-            out = torch.stack((susceptible, infect), dim=2)
 
+        if self.num_states == 3:
+            s, i, r = x[:, :, 0], x[:, :, 1], x[:, :, 2]
+            r, i = self.r2i(r, i, src, dst)
+            i, s = self.i2s(i, s, src, dst)
+            out = torch.stack((s, i, r), dim=2)
+        else:
+            s, i = x[:, :, 0], x[:, :, 1]
+            i, s = self.i2s(i, s, src, dst)
+            out = torch.stack((s, i), dim=2)
         return out
 
 
 class SL_IBPM(nn.Module):
-    """基于信息反向传播机理的源定位算法"""
-
     def __init__(
         self,
         num_nodes: int,
@@ -120,15 +103,12 @@ class SL_IBPM(nn.Module):
         )
 
     def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
-        """前向传播"""
         for layer in self.bp:
             x = layer(x, edge_index)
         return self.fc(x).squeeze(-1)
 
 
 class BiasedEstimator(nn.Module):
-    """有偏估计器"""
-
     def __init__(self, alpha: float, reduction: str, device: str) -> None:
         super().__init__()
         self.pos_weight = torch.tensor([1 / alpha]).to(device)
@@ -138,19 +118,15 @@ class BiasedEstimator(nn.Module):
         )
 
     def forward(self, pred: Tensor, true: Tensor) -> Tensor:
-        """计算有偏估计二元交叉熵损失"""
         loss = self.criterion(pred, true.float())
         if self.reduction == "mean":
             return loss.mean()
         elif self.reduction == "sum":
             return loss.sum()
-        else:
-            return loss
+        return loss
 
 
 class IBPMTrainer:
-    """信息反向传播机理训练器"""
-
     def __init__(
         self,
         model: SL_IBPM,
@@ -163,21 +139,15 @@ class IBPMTrainer:
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
+            self.model.parameters(), lr=lr, weight_decay=weight_decay
         )
         self.estimator = BiasedEstimator(
             alpha=alpha, reduction=reduction, device=device
         )
 
     def train_step(
-        self,
-        train_loader: DataLoader,
-        edge_index: Tensor,
-        mask: list | None = None,
+        self, train_loader: DataLoader, edge_index: Tensor, mask: list | None = None
     ) -> float:
-        """训练步"""
         edge_index = edge_index.to(self.device)
         total_loss = 0.0
         for x, true in train_loader:
@@ -193,12 +163,8 @@ class IBPMTrainer:
         return total_loss / len(train_loader)
 
     def valid_step(
-        self,
-        valid_loader: DataLoader,
-        edge_index: Tensor,
-        mask: list | None = None,
+        self, valid_loader: DataLoader, edge_index: Tensor, mask: list | None = None
     ) -> float:
-        """验证步"""
         edge_index = edge_index.to(self.device)
         total_loss = 0.0
         with torch.no_grad():
@@ -229,78 +195,216 @@ class IBPMTrainer:
         y_pred = np.concatenate(y_pred_all).ravel()
         roc = roc_auc_score(y_true, y_pred)
         y_pred_bin = (y_pred > 0.5).astype(int)
-        precision = precision_score(y_true, y_pred_bin)
-        recall = recall_score(y_true, y_pred_bin)
-        f1 = f1_score(y_true, y_pred_bin)
+        precision = precision_score(y_true, y_pred_bin, zero_division=0)
+        recall = recall_score(y_true, y_pred_bin, zero_division=0)
+        f1 = f1_score(y_true, y_pred_bin, zero_division=0)
         return float(roc), float(precision), float(recall), float(f1)
 
     def fit(
         self,
         train_loader: DataLoader,
         valid_loader: DataLoader,
-        edge_index: Tensor,
-        epochs: int,
-        mask: list | None = None,
-    ) -> None:
-        for epoch in range(epochs):
-            self.model.train()
-            train_loss = self.train_step(train_loader, edge_index, mask)
-            self.model.eval()
-            valid_loss = self.valid_step(valid_loader, edge_index, mask)
-            print(
-                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}"
-            )
-
-    def get_loss(
-        self,
-        train_loader: DataLoader,
-        valid_loader: DataLoader,
-        edge_index: Tensor,
-        epochs: int,
-        mask: list | None = None,
-    ) -> tuple[list[float], list[float]]:
-        train_loss_list = []
-        valid_loss_list = []
-        for epoch in range(epochs):
-            self.model.train()
-            train_loss = self.train_step(train_loader, edge_index, mask)
-            self.model.eval()
-            valid_loss = self.valid_step(valid_loader, edge_index, mask)
-            print(
-                f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Valid Loss: {valid_loss:.4f}"
-            )
-            if epoch % 10 == 0:
-                train_loss_list.append(train_loss)
-                valid_loss_list.append(valid_loss)
-        return train_loss_list, valid_loss_list
-
-    def evaluate(
-        self,
         test_loader: DataLoader,
         edge_index: Tensor,
+        epochs: int,
         mask: list | None = None,
+    ) -> dict:
+        history = {
+            "epoch": [],
+            "train_loss": [],
+            "valid_loss": [],
+            "test_auc": [],
+            "test_precision": [],
+            "test_recall": [],
+            "test_f1": [],
+        }
+        for epoch in range(epochs):
+            self.model.train()
+            tr_loss = self.train_step(train_loader, edge_index, mask)
+            self.model.eval()
+            vl_loss = self.valid_step(valid_loader, edge_index, mask)
+            roc, precision, recall, f1 = self.test_step(test_loader, edge_index, mask)
+
+            history["epoch"].append(epoch + 1)
+            history["train_loss"].append(tr_loss)
+            history["valid_loss"].append(vl_loss)
+            history["test_auc"].append(roc)
+            history["test_precision"].append(precision)
+            history["test_recall"].append(recall)
+            history["test_f1"].append(f1)
+
+            if epoch % 10 == 0 or epoch == epochs - 1:
+                print(
+                    f"Epoch {epoch + 1}/{epochs}, Train Loss: {tr_loss:.4f}, "
+                    f"Valid Loss: {vl_loss:.4f}, Test AUC: {roc:.4f}, Test F1: {f1:.4f}"
+                )
+        return history
+
+    def evaluate(
+        self, test_loader: DataLoader, edge_index: Tensor, mask: list | None = None
     ) -> tuple[float, float, float, float]:
-        """评估模型"""
         self.model.eval()
-        roc, precision, recall, f1 = self.test_step(test_loader, edge_index, mask)
-        return roc, precision, recall, f1
+        return self.test_step(test_loader, edge_index, mask)
 
 
+# ===================== 跨seed历史汇总工具 =====================
+def aggregate_histories(histories: list[dict]) -> dict:
+    """
+    将多个seed的历史记录按epoch聚合，计算均值和标准差。
+    返回的dict中每个key对应一个list，list中的元素是 (mean, std) 元组。
+    """
+    if not histories:
+        return {}
+    epochs = len(histories[0]["epoch"])
+    metrics = [
+        "train_loss",
+        "valid_loss",
+        "test_auc",
+        "test_precision",
+        "test_recall",
+        "test_f1",
+    ]
+    result = {"epoch": list(range(1, epochs + 1))}
+    for metric in metrics:
+        result[f"{metric}_mean"] = []
+        result[f"{metric}_std"] = []
+        for e in range(epochs):
+            values = [h[metric][e] for h in histories]
+            mean, std = compute_stats(values)
+            result[f"{metric}_mean"].append(mean)  # type: ignore
+            result[f"{metric}_std"].append(std)  # type: ignore
+    return result
+
+
+def save_history_csv(agg: dict, save_path: str):
+    """保存跨seed聚合后的历史记录（每个epoch的均值与标准差）"""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fieldnames = [
+        "epoch",
+        "train_loss_mean",
+        "train_loss_std",
+        "valid_loss_mean",
+        "valid_loss_std",
+        "test_auc_mean",
+        "test_auc_std",
+        "test_precision_mean",
+        "test_precision_std",
+        "test_recall_mean",
+        "test_recall_std",
+        "test_f1_mean",
+        "test_f1_std",
+    ]
+    with open(save_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for i in range(len(agg["epoch"])):
+            writer.writerow(
+                {
+                    k: f"{agg[k][i]:.6f}" if isinstance(agg[k][i], float) else agg[k][i]
+                    for k in fieldnames
+                }
+            )
+
+
+def save_layer_sensitivity_csv(
+    layer_numbers, aucs, precisions, recalls, f1s, save_path: str
+):
+    """保存层数敏感性实验汇总结果（每层只记最终指标，不记逐epoch历史）"""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["num_layers", "test_auc", "test_precision", "test_recall", "test_f1"]
+        )
+        for nl, a, p, r, fl in zip(layer_numbers, aucs, precisions, recalls, f1s):
+            writer.writerow([nl, a, p, r, fl])
+
+
+def layer_sensitivity_analysis(
+    name: str,
+    type_: str,
+    lr: float = 0.001,
+    alpha: float = 0.1,
+    weight_decay: float = 0.0,
+    device: str = "cuda:0",
+    layer_numbers: list = [1, 2, 3, 4, 5, 6, 7, 8],
+    epochs: int = 30,
+    save_dir: str = "result/layer_sensitivity",
+):
+    """分析BackProp模块层数对性能的影响，只保存汇总csv（不保存逐epoch历史）"""
+    (
+        train_loader,
+        valid_loader,
+        test_loader,
+        edge_index,
+        num_nodes,
+        num_edges,
+        num_states,
+    ) = load_data(name, type_, seed=0)
+
+    aucs, precisions, recalls, f1s = [], [], [], []
+    for num_layers in layer_numbers:
+        torch.manual_seed(0)
+        np.random.seed(0)
+        model = SL_IBPM(
+            num_nodes=num_nodes,
+            num_edges=num_edges,
+            num_states=num_states,
+            required_self_loops=True,
+            num_layers=num_layers,
+        )
+        trainer = IBPMTrainer(
+            model,
+            lr=lr,
+            weight_decay=weight_decay,
+            alpha=alpha,
+            reduction="mean",
+            device=device,
+        )
+        # 层数敏感性只跑一个seed，不记录逐epoch历史
+        trainer.fit(train_loader, valid_loader, test_loader, edge_index, epochs=epochs)
+        roc, pre, rec, f1 = trainer.evaluate(test_loader, edge_index)
+        aucs.append(roc)
+        precisions.append(pre)
+        recalls.append(rec)
+        f1s.append(f1)
+        print(f"Layers {num_layers}: AUC={roc:.4f}, F1={f1:.4f}")
+
+    save_layer_sensitivity_csv(
+        layer_numbers,
+        aucs,
+        precisions,
+        recalls,
+        f1s,
+        f"{save_dir}/{name}_{type_}_layer_sensitivity.csv",
+    )
+    return layer_numbers, aucs, f1s
+
+
+# ===================== 主实验 =====================
 def main(
     lr: float = 0.001,
     reduction: str = "mean",
     alpha: float = 0.1,
     weight_decay: float = 0.0,
     device: str = "cuda:0",
+    output_csv: str = "result/SL-IBPM.csv",
+    epochs: int = 100,
+    history_dir: str = "result/history",
+    run_layer_analysis: bool = False,
 ):
     file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
     type_list = ["SIR", "SI", "LT", "IC"]
+    results = {}
 
-    with open("result/SL-IBPM.txt", "w") as f:
-        f.write("SL-IBPM Results (AUROC, Precision, Recall, F1)\n")
-        f.write("-" * 70 + "\n")
-        for name in file_list:
-            for type_ in type_list:
+    for name in file_list:
+        for type_ in type_list:
+            # 收集跨seed的history和最终指标
+            all_histories = []
+            auc_list, precision_list, recall_list, f1_list = [], [], [], []
+
+            for seed in SEEDS:
+                # 使用不同seed划分数据
                 (
                     train_loader,
                     valid_loader,
@@ -309,35 +413,67 @@ def main(
                     num_nodes,
                     num_edges,
                     num_states,
-                ) = load_data(name, type_)
-                auc_list = []
-                precision_list = []
-                recall_list = []
-                f1_list = []
-                for _ in range(5):
-                    model = SL_IBPM(num_nodes, num_edges, num_states)
-                    trainer = IBPMTrainer(
-                        model,
-                        lr=lr,
-                        reduction=reduction,
-                        alpha=alpha,
-                        weight_decay=weight_decay,
-                        device=device,
-                    )
-                    trainer.fit(train_loader, valid_loader, edge_index, 100)
-                    roc, precision, recall, f1 = trainer.test_step(
-                        test_loader, edge_index
-                    )
-                    auc_list.append(roc)
-                    precision_list.append(precision)
-                    recall_list.append(recall)
-                    f1_list.append(f1)
-                f.write(
-                    f"{name} ({type_}) | "
-                    f"AUROC: {np.mean(auc_list):.4f}, Precision: {np.mean(precision_list):.4f}, "
-                    f"Recall: {np.mean(recall_list):.4f}, F1: {np.mean(f1_list):.4f}\n"
+                ) = load_data(name, type_, seed=seed)
+
+                torch.manual_seed(seed)
+                np.random.seed(seed)
+                model = SL_IBPM(num_nodes, num_edges, num_states)
+                trainer = IBPMTrainer(
+                    model,
+                    lr=lr,
+                    weight_decay=weight_decay,
+                    alpha=alpha,
+                    reduction=reduction,
+                    device=device,
                 )
-                f.write("-" * 70 + "\n")
+                # 训练并获取该seed的逐epoch历史
+                history = trainer.fit(
+                    train_loader, valid_loader, test_loader, edge_index, epochs
+                )
+                all_histories.append(history)
+
+                roc, precision, recall, f1 = trainer.evaluate(test_loader, edge_index)
+                auc_list.append(roc)
+                precision_list.append(precision)
+                recall_list.append(recall)
+                f1_list.append(f1)
+
+            # 聚合所有seed的逐epoch历史，保存均值和标准差
+            agg_history = aggregate_histories(all_histories)
+            save_history_csv(
+                agg_history,
+                f"{history_dir}/{name}_{type_}.csv",
+            )
+            print(f"Saved aggregated history for {name}-{type_}")
+
+            results[(name, type_)] = {
+                "auc_mean": compute_stats(auc_list)[0],
+                "auc_std": compute_stats(auc_list)[1],
+                "pre_mean": compute_stats(precision_list)[0],
+                "pre_std": compute_stats(precision_list)[1],
+                "rec_mean": compute_stats(recall_list)[0],
+                "rec_std": compute_stats(recall_list)[1],
+                "f1_mean": compute_stats(f1_list)[0],
+                "f1_std": compute_stats(f1_list)[1],
+            }
+
+    save_csv(results, output_csv)
+
+    # 可选的层数敏感性分析
+    if run_layer_analysis:
+        print("\n=== 层数敏感性分析 ===")
+        for name in file_list:
+            for type_ in type_list:
+                print(f"\n分析 {name} - {type_}")
+                layer_sensitivity_analysis(
+                    name,
+                    type_,
+                    lr=lr,
+                    alpha=alpha,
+                    weight_decay=weight_decay,
+                    device=device,
+                    epochs=30,
+                )
 
 
 def cascade(
@@ -346,223 +482,77 @@ def cascade(
     alpha: float = 0.1,
     weight_decay: float = 0.0,
     device: str = "cuda:0",
+    output_csv: str = "result/SL-IBPM_cascade.csv",
+    epochs: int = 100,
+    history_dir: str = "result/history_cascade",
 ):
-    file_list = ["douban", "twitter"]
-
-    with open("result/SL-IBPM_cascade.txt", "w") as f:
-        f.write("True cascade.\n")
-        f.write("-" * 70 + "\n")
-        for name in file_list:
-            (
-                train_loader,
-                valid_loader,
-                test_loader,
-                edge_index,
-                num_nodes,
-                num_edges,
-                num_states,
-            ) = get_true_cascade_dataset(name)
-            auc_list = []
-            precision_list = []
-            recall_list = []
-            f1_list = []
-            for _ in range(2):
-                model = SL_IBPM(num_nodes, num_edges, num_states)
-                trainer = IBPMTrainer(
-                    model,
-                    lr=lr,
-                    reduction=reduction,
-                    alpha=alpha,
-                    weight_decay=weight_decay,
-                    device=device,
-                )
-                trainer.fit(train_loader, valid_loader, edge_index, 100)
-                roc, precision, recall, f1 = trainer.test_step(test_loader, edge_index)
-                auc_list.append(roc)
-                precision_list.append(precision)
-                recall_list.append(recall)
-                f1_list.append(f1)
-            f.write(
-                f"{name} | "
-                f"AUROC: {np.mean(auc_list):.4f}, Precision: {np.mean(precision_list):.4f}, "
-                f"Recall: {np.mean(recall_list):.4f}, F1: {np.mean(f1_list):.4f}\n"
+    file_list = ["android", "christianity", "douban", "twitter"]
+    results = {}
+    for name in file_list:
+        (
+            train_loader,
+            valid_loader,
+            test_loader,
+            edge_index,
+            num_nodes,
+            num_edges,
+            num_states,
+        ) = get_true_cascade_dataset(name)
+        all_histories = []
+        auc_list, precision_list, recall_list, f1_list = [], [], [], []
+        for seed in SEEDS:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            model = SL_IBPM(num_nodes, num_edges, num_states)
+            trainer = IBPMTrainer(
+                model,
+                lr=lr,
+                reduction=reduction,
+                alpha=alpha,
+                weight_decay=weight_decay,
+                device=device,
             )
-            f.write("-" * 70 + "\n")
+            history = trainer.fit(
+                train_loader, valid_loader, test_loader, edge_index, epochs
+            )
+            all_histories.append(history)
+            roc, precision, recall, f1 = trainer.evaluate(test_loader, edge_index)
+            auc_list.append(roc)
+            precision_list.append(precision)
+            recall_list.append(recall)
+            f1_list.append(f1)
 
+        # 保存聚合历史（真实级联数据同样只保存均值与方差）
+        agg_history = aggregate_histories(all_histories)
+        save_history_csv(
+            agg_history,
+            f"{history_dir}/{name}_cascade.csv",
+        )
+        print(f"Saved aggregated cascade history for {name}")
 
-def parameter(
-    lr: float = 0.001,
-    reduction: str = "mean",
-    alpha: float = 0.1,
-    weight_decay: float = 0.0,
-    device: str = "cuda:0",
-):
-    file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
-    layer_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    epoch_list = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-
-    with open("result/SL-IBPM_parameter.txt", "w") as f:
-        for name in file_list:
-            (
-                train_loader,
-                valid_loader,
-                test_loader,
-                edge_index,
-                num_nodes,
-                num_edges,
-                num_states,
-            ) = get_true_cascade_dataset(name)
-            f.write("-" * 70 + "\n")
-            for layer in layer_list:
-                auc_list = []
-                precision_list = []
-                recall_list = []
-                f1_list = []
-                for _ in range(10):
-                    model = SL_IBPM(num_nodes, num_edges, num_states, num_layers=layer)
-                    trainer = IBPMTrainer(
-                        model,
-                        lr=lr,
-                        reduction=reduction,
-                        alpha=alpha,
-                        weight_decay=weight_decay,
-                        device=device,
-                    )
-                    trainer.fit(train_loader, valid_loader, edge_index, 100)
-                    roc, precision, recall, f1 = trainer.test_step(
-                        test_loader, edge_index
-                    )
-                    auc_list.append(roc)
-                    precision_list.append(precision)
-                    recall_list.append(recall)
-                    f1_list.append(f1)
-                f.write(
-                    f"Dataset: {name}, "
-                    f"Layer: {layer}, "
-                    f"AUROC: {np.mean(auc_list):.4f}, Precision: {np.mean(precision_list):.4f}, Recall: {np.mean(recall_list):.4f}, F1: {np.mean(f1_list):.4f}\n"
-                )
-            f.write("-" * 70 + "\n")
-            for epoch in epoch_list:
-                auc_list = []
-                precision_list = []
-                recall_list = []
-                f1_list = []
-                for _ in range(10):
-                    model = SL_IBPM(num_nodes, num_edges, num_states)
-                    trainer = IBPMTrainer(
-                        model,
-                        lr=lr,
-                        reduction=reduction,
-                        alpha=alpha,
-                        weight_decay=weight_decay,
-                        device=device,
-                    )
-                    trainer.fit(train_loader, valid_loader, edge_index, epoch)
-                    roc, precision, recall, f1 = trainer.test_step(
-                        test_loader, edge_index
-                    )
-                    auc_list.append(roc)
-                    precision_list.append(precision)
-                    recall_list.append(recall)
-                    f1_list.append(f1)
-                f.write(
-                    f"Dataset: {name}, "
-                    f"Epoch: {epoch}, "
-                    f"AUROC: {np.mean(auc_list):.4f}, Precision: {np.mean(precision_list):.4f}, Recall: {np.mean(recall_list):.4f}, F1: {np.mean(f1_list):.4f}\n"
-                )
-
-
-def loss(
-    lr: float = 0.001,
-    reduction: str = "mean",
-    alpha: float = 0.1,
-    weight_decay: float = 0.0,
-    device: str = "cuda:0",
-):
-    file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
-
-    with open("result/SL-IBPM_loss.txt", "w") as f:
-        for name in file_list:
-            (
-                train_loader,
-                valid_loader,
-                _,
-                edge_index,
-                num_nodes,
-                num_edges,
-                num_states,
-            ) = get_true_cascade_dataset(name)
-            train_loss_list = []
-            valid_loss_list = []
-            for _ in range(10):
-                model = SL_IBPM(num_nodes, num_edges, num_states)
-                trainer = IBPMTrainer(
-                    model,
-                    lr=lr,
-                    reduction=reduction,
-                    alpha=alpha,
-                    weight_decay=weight_decay,
-                    device=device,
-                )
-                trainer.fit(train_loader, valid_loader, edge_index, 100)
-                train_loss, valid_loss = trainer.get_loss(
-                    train_loader, valid_loader, edge_index, 100
-                )
-                train_loss_list.append(train_loss)
-                valid_loss_list.append(valid_loss)
-            train_loss_npy = np.array(train_loss_list).mean(axis=0)
-            valid_loss_npy = np.array(valid_loss_list).mean(axis=0)
-            f.write(f"{name}: {[list(train_loss_npy), list(valid_loss_npy)]}\n")
-
-
-def loss_func_parameter(
-    lr: float = 0.001,
-    reduction: str = "mean",
-    alpha: float = 0.1,
-    weight_decay: float = 0.0,
-    device: str = "cuda:0",
-):
-    file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
-    lambda_list = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-
-    with open("result/SL-IBPM_loss_parameter.txt", "w") as f:
-        for name in file_list:
-            (
-                train_loader,
-                valid_loader,
-                test_loader,
-                edge_index,
-                num_nodes,
-                num_edges,
-                num_states,
-            ) = get_true_cascade_dataset(name)
-            for lambda_ in lambda_list:
-                auc_list = []
-                precision_list = []
-                recall_list = []
-                f1_list = []
-                for _ in range(10):
-                    model = SL_IBPM(num_nodes, num_edges, num_states)
-                    trainer = IBPMTrainer(
-                        model,
-                        lr=lr,
-                        reduction=reduction,
-                        alpha=lambda_,
-                        weight_decay=weight_decay,
-                        device=device,
-                    )
-                    trainer.fit(train_loader, valid_loader, edge_index, 100)
-                    roc, precision, recall, f1 = trainer.test_step(
-                        test_loader, edge_index
-                    )
-                    auc_list.append(roc)
-                    precision_list.append(precision)
-                    recall_list.append(recall)
-                    f1_list.append(f1)
-                f.write(
-                    f"{name}-{lambda_}: Precison: {np.mean(precision_list):.4f} ± 0.0, Recall: {np.mean(recall_list):.4f} ± 0.0, F1: {np.mean(f1_list):.4f} ± 0.0\n"
-                )
+        results[(name, "cascade")] = {
+            "auc_mean": compute_stats(auc_list)[0],
+            "auc_std": compute_stats(auc_list)[1],
+            "pre_mean": compute_stats(precision_list)[0],
+            "pre_std": compute_stats(precision_list)[1],
+            "rec_mean": compute_stats(recall_list)[0],
+            "rec_std": compute_stats(recall_list)[1],
+            "f1_mean": compute_stats(f1_list)[0],
+            "f1_std": compute_stats(f1_list)[1],
+        }
+    save_csv(results, output_csv)
 
 
 if __name__ == "__main__":
-    main()
+    main(
+        lr=0.001,
+        reduction="mean",
+        alpha=0.1,
+        weight_decay=0.0,
+        device="cuda:3",
+        output_csv="result/SL-IBPM.csv",
+        epochs=100,
+        history_dir="result/history_aggregated",
+        run_layer_analysis=True,
+    )
+    # cascade(device="cuda:3")

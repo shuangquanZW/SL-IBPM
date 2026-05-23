@@ -247,11 +247,11 @@ class IBPMTrainer:
         return self.test_step(test_loader, edge_index, mask)
 
 
-# ===================== 跨seed历史汇总工具 =====================
+# ===================== Cross-seed history aggregation utilities =====================
 def aggregate_histories(histories: list[dict]) -> dict:
     """
-    将多个seed的历史记录按epoch聚合，计算均值和标准差。
-    返回的dict中每个key对应一个list，list中的元素是 (mean, std) 元组。
+    Aggregate histories from multiple seeds by epoch and compute mean/std.
+    Each metric key maps to a list of (mean, std) values.
     """
     if not histories:
         return {}
@@ -277,7 +277,7 @@ def aggregate_histories(histories: list[dict]) -> dict:
 
 
 def save_history_csv(agg: dict, save_path: str):
-    """保存跨seed聚合后的历史记录（每个epoch的均值与标准差）"""
+    """Save cross-seed aggregated history with per-epoch mean and std."""
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fieldnames = [
         "epoch",
@@ -309,7 +309,7 @@ def save_history_csv(agg: dict, save_path: str):
 def save_layer_sensitivity_csv(
     layer_numbers, aucs, precisions, recalls, f1s, save_path: str
 ):
-    """保存层数敏感性实验汇总结果（每层只记最终指标，不记逐epoch历史）"""
+    """Save layer-sensitivity summary metrics without per-epoch history."""
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -331,7 +331,7 @@ def layer_sensitivity_analysis(
     epochs: int = 30,
     save_dir: str = "result/layer_sensitivity",
 ):
-    """分析BackProp模块层数对性能的影响，只保存汇总csv（不保存逐epoch历史）"""
+    """Analyze how BackProp depth affects performance and save summary CSV only."""
     (
         train_loader,
         valid_loader,
@@ -361,7 +361,7 @@ def layer_sensitivity_analysis(
             reduction="mean",
             device=device,
         )
-        # 层数敏感性只跑一个seed，不记录逐epoch历史
+        # Layer sensitivity uses one seed and does not record per-epoch history.
         trainer.fit(train_loader, valid_loader, test_loader, edge_index, epochs=epochs)
         roc, pre, rec, f1 = trainer.evaluate(test_loader, edge_index)
         aucs.append(roc)
@@ -381,7 +381,7 @@ def layer_sensitivity_analysis(
     return layer_numbers, aucs, f1s
 
 
-# ===================== 主实验 =====================
+# ===================== Main experiments =====================
 def main(
     lr: float = 0.001,
     reduction: str = "mean",
@@ -399,12 +399,12 @@ def main(
 
     for name in file_list:
         for type_ in type_list:
-            # 收集跨seed的history和最终指标
+            # Collect histories and final metrics across seeds.
             all_histories = []
             auc_list, precision_list, recall_list, f1_list = [], [], [], []
 
             for seed in SEEDS:
-                # 使用不同seed划分数据
+                # Split data with different seeds.
                 (
                     train_loader,
                     valid_loader,
@@ -426,7 +426,7 @@ def main(
                     reduction=reduction,
                     device=device,
                 )
-                # 训练并获取该seed的逐epoch历史
+                # Train and collect the per-epoch history for this seed.
                 history = trainer.fit(
                     train_loader, valid_loader, test_loader, edge_index, epochs
                 )
@@ -438,7 +438,7 @@ def main(
                 recall_list.append(recall)
                 f1_list.append(f1)
 
-            # 聚合所有seed的逐epoch历史，保存均值和标准差
+            # Aggregate per-epoch histories across seeds and save mean/std.
             agg_history = aggregate_histories(all_histories)
             save_history_csv(
                 agg_history,
@@ -459,12 +459,12 @@ def main(
 
     save_csv(results, output_csv)
 
-    # 可选的层数敏感性分析
+    # Optional layer-sensitivity analysis.
     if run_layer_analysis:
-        print("\n=== 层数敏感性分析 ===")
+        print("\n=== Layer Sensitivity Analysis ===")
         for name in file_list:
             for type_ in type_list:
-                print(f"\n分析 {name} - {type_}")
+                print(f"\nAnalyzing {name} - {type_}")
                 layer_sensitivity_analysis(
                     name,
                     type_,
@@ -522,7 +522,7 @@ def cascade(
             recall_list.append(recall)
             f1_list.append(f1)
 
-        # 保存聚合历史（真实级联数据同样只保存均值与方差）
+        # Save aggregated history for real cascade data as mean and variance.
         agg_history = aggregate_histories(all_histories)
         save_history_csv(
             agg_history,

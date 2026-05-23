@@ -172,7 +172,7 @@ class GCNTrainer:
         return self.test_step(test_loader, edge_index, mask)
 
 
-# ===================== 跨seed聚合工具 =====================
+# ===================== Cross-seed aggregation utilities =====================
 def aggregate_histories(histories):
     if not histories:
         return {}

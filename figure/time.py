@@ -7,7 +7,7 @@ def plot_time():
     set_global_style()
     plt.figure(figsize=(8, 5))
 
-    # 运行时数据
+    # Runtime data.
     df = pd.read_excel("./result/study_result.xlsx", sheet_name="Time")
     gcnsi = df.iloc[0].to_numpy()[1:]
     mpnn = df.iloc[1].to_numpy()[1:]

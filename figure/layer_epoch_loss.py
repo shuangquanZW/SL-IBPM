@@ -7,18 +7,18 @@ from util_figure import set_global_style, get_style_scheme, save_figure
 def plot_layer_epoch_auroc():
     set_global_style()
 
-    # ==================== 数据读取配置 ====================
+    # ==================== Data loading configuration ====================
     datasets = ["Karate", "Jazz", "NetScience", "CoraML", "PowerGrid", "LastFM"]
     file_prefixes = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
-    data_dir = "../result/layer_sensitivity"  # <-- 根据你实际存放 CSV 的路径修改
+    data_dir = "../result/layer_sensitivity"  # <-- Adjust to the actual CSV directory.
 
-    # -------------------- Layer 实验数据 --------------------
+    # -------------------- Layer experiment data --------------------
     auroc_layer = []
     for prefix in file_prefixes:
         df = pd.read_csv(f"{data_dir}/{prefix}_SIR_layer_sensitivity.csv")
         auroc_layer.append(df["test_auc"].values)
 
-    # -------------------- Epoch 实验 + Loss 数据 --------------------
+    # -------------------- Epoch experiment and loss data --------------------
     auroc_epoch = []
     loss_data = {}
     epoch_points = [1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
@@ -26,23 +26,23 @@ def plot_layer_epoch_auroc():
     for prefix, name in zip(file_prefixes, datasets):
         df = pd.read_csv(f"../result/history_aggregated/{prefix}_SIR.csv")
 
-        # Epoch 实验：采样指定 epoch 的 test_auc_mean
+        # Epoch experiment: sample test_auc_mean at selected epochs.
         sampled = df[df["epoch"].isin(epoch_points)]["test_auc_mean"].values
         auroc_epoch.append(sampled)
 
-        # Loss：保留全部 100 个 epoch 的均值（如需和旧版完全一致只画 10 个点，
-        # 可改为 df[df["epoch"].isin(range(10,101,10))]...）
+        # Loss: keep means from all 100 epochs. To match the old version exactly,
+        # switch to df[df["epoch"].isin(range(10,101,10))]...
         loss_data[name] = (
             df["train_loss_mean"].values,
             df["valid_loss_mean"].values,
         )
 
-    # ==================== 坐标轴数据 ====================
-    layers = [1, 2, 3, 4, 5, 6, 7, 8]  # 新版只有 8 层
+    # ==================== Axis data ====================
+    layers = [1, 2, 3, 4, 5, 6, 7, 8]  # The current version has 8 layers.
     epochs = [1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-    all_epochs = np.arange(1, 101)  # Loss 图使用全部 epoch
+    all_epochs = np.arange(1, 101)  # Loss plots use all epochs.
 
-    # ==================== 绘图 ====================
+    # ==================== Plotting ====================
     _, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(24, 4))
     palette, markers, _ = get_style_scheme(6, "line")
 
@@ -97,10 +97,10 @@ def plot_layer_epoch_auroc():
             color=loss_palette[j],
             marker=loss_markers[j],
             linewidth=2.5,
-            markersize=8,  # 100 个点较密，适当缩小
+            markersize=8,  # Use a smaller marker because 100 points are dense.
             markeredgewidth=1.5,
             markeredgecolor="white",
-            markevery=10,  # 每 10 个 epoch 显示一个 marker
+            markevery=10,  # Show one marker every 10 epochs.
         )
         ax3.set_title(f"{titles[0]}", fontweight="bold")
         ax3.grid(linestyle="--", alpha=0.3)

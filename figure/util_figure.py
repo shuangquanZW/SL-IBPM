@@ -2,9 +2,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-# 全局样式设置
+# Global style settings.
 def set_global_style():
-    """设置全局绘图样式"""
+    """Set the global plotting style."""
     sns.set_style("whitegrid")
     sns.set_context("talk", font_scale=1)
     plt.rcParams["font.family"] = ["Times New Roman"]
@@ -22,9 +22,9 @@ def set_global_style():
     plt.rcParams["figure.dpi"] = 600
 
 
-# 颜色和标记方案
+# Color and marker schemes.
 def get_style_scheme(n_items, plot_type):
-    """获取颜色和标记方案"""
+    """Return a color and marker scheme."""
     schemes = {
         "bar": {
             "palette": sns.color_palette("gray", n_items),
@@ -44,7 +44,7 @@ def get_style_scheme(n_items, plot_type):
     return scheme["palette"], scheme.get("markers", []), scheme.get("hatches", [])
 
 
-# 保存图像
+# Save figures.
 def save_figure(filename, bbox_inches="tight", format="pdf"):
     plt.savefig(
         filename,
@@ -54,9 +54,9 @@ def save_figure(filename, bbox_inches="tight", format="pdf"):
     plt.close()
 
 
-# 创建图例
+# Create legends.
 def create_legend(ax, ncol=1, loc="best", framealpha=0.9):
-    """创建图例"""
+    """Create a legend."""
     handles, labels = ax.get_legend_handles_labels()
     return plt.legend(
         handles,
@@ -69,7 +69,7 @@ def create_legend(ax, ncol=1, loc="best", framealpha=0.9):
     )
 
 
-# 双Y轴折线图
+# Dual-y-axis line plot.
 def plot_twin_axis(
     data_left,
     data_right,
@@ -80,14 +80,14 @@ def plot_twin_axis(
     right_label,
     figsize=(8, 5),
 ):
-    """绘制双Y轴折线图"""
+    """Plot a dual-y-axis line chart."""
     palette_left, markers_left, _ = get_style_scheme(1, "line")
     palette_right, markers_right, _ = get_style_scheme(1, "multi")
 
     fig, ax_left = plt.subplots(figsize=figsize)
     ax_right = ax_left.twinx()
 
-    # 左侧轴
+    # Left axis.
     ax_left.plot(
         x_values,
         data_left,
@@ -100,7 +100,7 @@ def plot_twin_axis(
         label=left_label,
     )
 
-    # 右侧轴
+    # Right axis.
     ax_right.plot(
         x_values,
         data_right,
@@ -113,17 +113,17 @@ def plot_twin_axis(
         label=right_label,
     )
 
-    # 设置标签
+    # Set labels.
     ax_left.set_xlabel(labels["x"], fontweight="bold")
     ax_left.set_ylabel(labels["left"], fontweight="bold", color=palette_left[0])
     ax_right.set_ylabel(labels["right"], fontweight="bold", color=palette_right[0])
     ax_left.set_title(title, fontweight="bold")
 
-    # 设置刻度颜色
+    # Set tick colors.
     ax_left.tick_params(axis="y", colors=palette_left[0])
     ax_right.tick_params(axis="y", colors=palette_right[0])
 
-    # 添加图例
+    # Add legend.
     lines = [ax_left.get_lines()[0], ax_right.get_lines()[0]]
     ax_left.legend(lines, [left_label, right_label])
 

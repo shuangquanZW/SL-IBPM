@@ -1,4 +1,4 @@
-"""公共工具函数与数据加载"""
+"""Shared utility functions and data loaders."""
 
 import os
 import csv
@@ -11,13 +11,13 @@ from torch.utils.data import TensorDataset, DataLoader
 
 SEEDS = [0, 1, 2, 3, 4]
 
-# ========================= 网络拓扑缓存 =========================
+# ========================= Graph topology cache =========================
 
 _graph_stats_cache = {}
 
 
 def _compute_graph_stats(file_name: str, model_type: str):
-    """计算并缓存图的拓扑统计信息"""
+    """Compute and cache topology statistics for a graph."""
     key = (file_name, model_type)
     if key in _graph_stats_cache:
         return _graph_stats_cache[key]
@@ -55,45 +55,45 @@ def _compute_graph_stats(file_name: str, model_type: str):
 
 
 def get_graph_stats(file_name: str, model_type: str):
-    """获取图的统计信息"""
+    """Return graph statistics."""
     return _compute_graph_stats(file_name, model_type)
 
 
-# ========================= 定制传播参数表 =========================
-# 适配设置：
-#   - 源节点比例：10%
-#   - 传播目标比例：30%
+# ========================= Custom propagation parameter table =========================
+# Calibration settings:
+#   - Source-node ratio: 10%
+#   - Target propagation ratio: 30%
 #
-# 因为源节点已经占 10%，所以传播参数不宜过强。
-# 目标是让传播额外扩散约 20% 节点，避免传播过弱或过饱和。
+# Since source nodes already account for 10%, propagation should not be too strong.
+# The goal is to spread to roughly 20% additional nodes without under- or over-saturation.
 
 _PROPAGATION_PARAMS_CUSTOM = {
-    # karate: 小图，传播参数可稍高
+    # karate: small graph, so propagation parameters can be slightly higher.
     ("karate", "SIR"): {"beta": (0.10, 0.25), "gamma": (0.05, 0.15)},
     ("karate", "SI"): {"beta": (0.10, 0.25)},
     ("karate", "LT"): {"threshold": (0.20, 0.35)},
     ("karate", "IC"): {"prob": (0.10, 0.25)},
-    # jazz: 稠密图，beta / prob 不能太大
+    # jazz: dense graph; beta / prob should remain small.
     ("jazz", "SIR"): {"beta": (0.005, 0.015), "gamma": (0.05, 0.12)},
     ("jazz", "SI"): {"beta": (0.008, 0.020)},
     ("jazz", "LT"): {"threshold": (0.15, 0.30)},
     ("jazz", "IC"): {"prob": (0.015, 0.040)},
-    # net_science: 稀疏且可能不连通，参数中等
+    # net_science: sparse and possibly disconnected; use moderate parameters.
     ("net_science", "SIR"): {"beta": (0.08, 0.16), "gamma": (0.05, 0.15)},
     ("net_science", "SI"): {"beta": (0.08, 0.18)},
     ("net_science", "LT"): {"threshold": (0.18, 0.32)},
     ("net_science", "IC"): {"prob": (0.08, 0.20)},
-    # cora_ml: 中大图，参数不要太弱
+    # cora_ml: medium-large graph; avoid overly weak parameters.
     ("cora_ml", "SIR"): {"beta": (0.05, 0.12), "gamma": (0.04, 0.12)},
     ("cora_ml", "SI"): {"beta": (0.06, 0.15)},
     ("cora_ml", "LT"): {"threshold": (0.15, 0.30)},
     ("cora_ml", "IC"): {"prob": (0.06, 0.18)},
-    # power_grid: 很稀疏，传播参数需要偏高
+    # power_grid: very sparse graph; propagation parameters need to be higher.
     ("power_grid", "SIR"): {"beta": (0.20, 0.40), "gamma": (0.05, 0.15)},
     ("power_grid", "SI"): {"beta": (0.25, 0.50)},
     ("power_grid", "LT"): {"threshold": (0.25, 0.45)},
     ("power_grid", "IC"): {"prob": (0.25, 0.50)},
-    # lastFM: 大图，参数中等偏强
+    # lastFM: large graph; use moderate-to-strong parameters.
     ("lastFM", "SIR"): {"beta": (0.05, 0.12), "gamma": (0.04, 0.12)},
     ("lastFM", "SI"): {"beta": (0.08, 0.20)},
     ("lastFM", "LT"): {"threshold": (0.12, 0.28)},
@@ -101,7 +101,7 @@ _PROPAGATION_PARAMS_CUSTOM = {
 }
 
 
-# 静态 fallback 参数
+# Static fallback parameters.
 _PROPAGATION_PARAMS_FALLBACK = {
     "SIR": {"beta": (0.1, 0.3), "gamma": (0.05, 0.15)},
     "SI": {"beta": (0.1, 0.3)},
@@ -111,13 +111,13 @@ _PROPAGATION_PARAMS_FALLBACK = {
 
 
 def get_propagation_params(file_name: str, model_type: str):
-    """返回指定数据集和传播模型的参数范围"""
+    """Return the parameter ranges for a dataset and propagation model."""
     key = (file_name, model_type)
 
     if key in _PROPAGATION_PARAMS_CUSTOM:
         return _PROPAGATION_PARAMS_CUSTOM[key]
 
-    # 若未命中定制表，则回退到动态计算
+    # Fall back to dynamic calculation when no custom entry exists.
     try:
         stats = _compute_graph_stats(file_name, model_type)
         params_dict = _compute_propagation_params_from_stats(stats)
@@ -130,7 +130,7 @@ def get_propagation_params(file_name: str, model_type: str):
 
 
 def _compute_propagation_params_from_stats(stats: dict):
-    """基于图统计信息动态计算传播参数，作为 fallback 保留"""
+    """Compute propagation parameters from graph statistics as a fallback."""
     avg_deg = stats["avg_degree"]
     num_nodes = stats["num_nodes"]
 
@@ -197,11 +197,11 @@ def _compute_propagation_params_from_stats(stats: dict):
     }
 
 
-# ========================= 图加载 =========================
+# ========================= Graph loading =========================
 
 
 def get_graph(file_name: str, model_type: str):
-    """获取图结构数据并确保节点编号连续"""
+    """Load graph structure data and ensure node indices are contiguous."""
     edge_index = np.load(f"data/{model_type}/{file_name}/edge_index.npy")
     src = edge_index[0]
     dst = edge_index[1]
@@ -219,17 +219,17 @@ def get_graph(file_name: str, model_type: str):
 
 def get_radio(graph: nx.Graph, status: dict, model_type: str = "SI"):
     """
-    获取传播范围。
+    Return the propagation range.
 
-    对于 SIR：
-        统计感染过的节点比例，即 I + R。
+    For SIR:
+        Count the proportion of nodes that have been infected, i.e. I + R.
         status:
             0 = susceptible
             1 = infected
             2 = recovered
 
-    对于 SI / LT / IC：
-        status == 1 表示已感染或已激活。
+    For SI / LT / IC:
+        status == 1 means infected or activated.
     """
     if graph.number_of_nodes() == 0:
         return 0.0
@@ -242,7 +242,7 @@ def get_radio(graph: nx.Graph, status: dict, model_type: str = "SI"):
     return infected / graph.number_of_nodes()
 
 
-# ========================= 传播模型 =========================
+# ========================= Propagation models =========================
 
 
 def sir_propagation(
@@ -253,10 +253,10 @@ def sir_propagation(
     gamma_range=(0.05, 0.15),
 ):
     """
-    SIR 模型传播。
+    Simulate SIR propagation.
 
-    传播停止条件：
-        I + R 比例达到 radio。
+    Stop when:
+        The I + R ratio reaches radio.
     """
     status = {node: 0 for node in graph.nodes()}
 
@@ -310,10 +310,10 @@ def si_propagation(
     beta_range=(0.1, 0.3),
 ):
     """
-    SI 模型传播。
+    Simulate SI propagation.
 
-    传播停止条件：
-        感染节点比例达到 radio。
+    Stop when:
+        The infected-node ratio reaches radio.
     """
     status = {node: 0 for node in graph.nodes()}
 
@@ -358,10 +358,10 @@ def lt_propagation(
     threshold_range=(0.4, 0.6),
 ):
     """
-    LT 线性阈值模型传播。
+    Simulate Linear Threshold propagation.
 
-    传播停止条件：
-        激活节点比例达到 radio。
+    Stop when:
+        The activated-node ratio reaches radio.
     """
     status = {node: 0 for node in graph.nodes()}
 
@@ -422,10 +422,10 @@ def ic_propagation(
     prob_range=(0.05, 0.15),
 ):
     """
-    IC 独立级联模型传播。
+    Simulate Independent Cascade propagation.
 
-    传播停止条件：
-        激活节点比例达到 radio。
+    Stop when:
+        The activated-node ratio reaches radio.
     """
     status = {node: 0 for node in graph.nodes()}
     triggered_edges = set()
@@ -479,7 +479,7 @@ def run_propagation(
     target_ratio: float = 0.3,
     file_name: str | None = None,
 ):
-    """传播模型调度器"""
+    """Dispatch to the selected propagation model."""
     params = get_propagation_params(file_name, model_type) if file_name else {}
 
     if model_type == "SIR":
@@ -519,7 +519,7 @@ def run_propagation(
         raise ValueError(f"Invalid propagation model: {model_type}")
 
 
-# ========================= 数据生成与保存 =========================
+# ========================= Data generation and saving =========================
 
 
 def save_static_data(
@@ -530,29 +530,29 @@ def save_static_data(
     target_ratio: float = 0.3,
 ):
     """
-    保存静态数据。
+    Save synthetic propagation data.
 
-    当前标准设置：
-        1. 源节点数量 = 全部节点的 10%
-        2. 源节点位置 = 从全部节点中随机选择
-        3. 传播目标 = 30% 节点被感染或激活
-        4. SIR 中传播比例按 I + R 统计
+    Standard settings:
+        1. Number of source nodes = 10% of all nodes
+        2. Source nodes are sampled randomly from all nodes
+        3. Propagation target = 30% infected or activated nodes
+        4. For SIR, the propagation ratio is measured as I + R
 
-    参数：
+    Args:
         file_name:
-            数据集名称，例如 karate, jazz, net_science, cora_ml, power_grid, lastFM。
+            Dataset name, such as karate, jazz, net_science, cora_ml, power_grid, or lastFM.
 
         model_type:
-            传播模型类型，SIR / SI / LT / IC。
+            Propagation model type: SIR / SI / LT / IC.
 
         seed_num:
-            若 seed_num <= 0，则自动设置为 int(num_nodes * 0.1)。
+            If seed_num <= 0, it is set automatically to int(num_nodes * 0.1).
 
         batch_size:
-            生成样本数量。
+            Number of samples to generate.
 
         target_ratio:
-            传播目标比例，默认 0.3。
+            Target propagation ratio. Defaults to 0.3.
     """
     graph = get_graph(file_name, model_type)
     num_nodes = graph.number_of_nodes()
@@ -560,11 +560,11 @@ def save_static_data(
     if num_nodes <= 0:
         raise ValueError(f"Graph {file_name}-{model_type} has no nodes.")
 
-    # 选择全部节点的 10% 作为源节点
+    # Use 10% of all nodes as source nodes.
     if seed_num <= 0:
         seed_num = max(1, int(num_nodes * 0.1))
 
-    # 避免极端情况下 seed_num 超过节点数
+    # Avoid edge cases where seed_num exceeds the number of nodes.
     seed_num = min(seed_num, num_nodes)
 
     num_states = 3 if model_type == "SIR" else 2
@@ -575,7 +575,7 @@ def save_static_data(
     all_nodes = list(range(num_nodes))
 
     for i in range(batch_size):
-        # 从全部节点中随机选择 10% 作为源节点
+        # Randomly choose 10% of all nodes as source nodes.
         seed_nodes = random.sample(all_nodes, seed_num)
         seed_data[i, seed_nodes] = 1.0
 
@@ -610,11 +610,11 @@ def generate_datasets(
     target_ratio: float = 0.3,
 ):
     """
-    生成所有静态传播数据集。
+    Generate all synthetic propagation datasets.
 
-    默认：
-        源节点比例 10%
-        感染目标比例 30%
+    Defaults:
+        Source-node ratio: 10%
+        Infection target ratio: 30%
     """
     datasets = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
     models = ["SIR", "SI", "LT", "IC"]
@@ -630,11 +630,11 @@ def generate_datasets(
             )
 
 
-# ========================= 结果统计与保存 =========================
+# ========================= Result statistics and saving =========================
 
 
 def compute_stats(values):
-    """计算均值和样本标准差"""
+    """Compute the mean and sample standard deviation."""
     values = np.asarray(values)
 
     if len(values) <= 1:
@@ -644,7 +644,7 @@ def compute_stats(values):
 
 
 def save_csv(results, filepath):
-    """保存结果为 CSV 文件，包含 AUC、Precision、Recall、F1 的均值与标准差"""
+    """Save results to a CSV file with mean and std for AUC, Precision, Recall, and F1."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -682,17 +682,17 @@ def save_csv(results, filepath):
             )
 
 
-# ========================= 数据加载器（支持按 seed 随机划分） =========================
+# ========================= Data loaders with seed-based random splits =========================
 
 
 def load_data(file_name: str, model_type: str, seed: int = 0):
     """
-    加载静态传播数据，并创建 DataLoader。
+    Load synthetic propagation data and create DataLoaders.
 
-    划分比例：
+    Split ratio:
         train : valid : test = 8 : 1 : 1
 
-    支持按 seed 随机划分。
+    Supports seed-based random splits.
     """
     state = np.load(f"./data/{model_type}/{file_name}/state.npy")
     seed_labels = np.load(f"./data/{model_type}/{file_name}/seed.npy")
@@ -737,20 +737,20 @@ def load_data(file_name: str, model_type: str, seed: int = 0):
     )
 
 
-# ========================= 真实级联数据处理 =========================
+# ========================= Real cascade data processing =========================
 
 
 def resize_index(name: str):
     """
-    对真实级联数据重新编号，使节点编号从 0 开始连续。
+    Reindex real cascade data so node ids are contiguous from 0.
 
-    输入文件：
+    Input files:
         ./data/{name}/edges.txt
         ./data/{name}/cascade.txt
         ./data/{name}/cascadetest.txt
         ./data/{name}/cascadevalid.txt
 
-    输出文件：
+    Output files:
         ./data/{name}/edge_index.npy
         ./data/{name}/index_dict.pkl
     """
@@ -807,21 +807,21 @@ def resize_index(name: str):
     with open(f"./data/{name}/index_dict.pkl", "wb") as f:
         pickle.dump(index_dict, f)
 
-    print("处理完成：")
-    print(f"原始节点数量：{len(nodes)}")
-    print(f"边数量：{len(edges)}")
+    print("Processing completed.")
+    print(f"Original node count: {len(nodes)}")
+    print(f"Edge count: {len(edges)}")
 
 
 def load_cascade_data(path: str, num_nodes: int, stype: str):
     """
-    加载真实级联数据并保存为 state/seed numpy 文件。
+    Load real cascade data and save it as state/seed NumPy files.
 
-    path 示例：
+    Example paths:
         ./data/digg/cascade.txt
         ./data/digg/cascadetest.txt
         ./data/digg/cascadevalid.txt
 
-    stype 示例：
+    Example stype values:
         train / test / valid
     """
     name = path.split("/")[1]
@@ -841,7 +841,7 @@ def load_cascade_data(path: str, num_nodes: int, stype: str):
         for i, info in enumerate(information):
             info = info.strip().split(" ")
 
-            # 默认将前 10% 传播节点作为源节点
+            # Use the first 10% of propagation nodes as sources by default.
             sources = int(len(info) * 0.1) + 1
 
             nodes = [index_dict[int(node_.split(",")[0])] for node_ in info if node_]
@@ -857,9 +857,9 @@ def load_cascade_data(path: str, num_nodes: int, stype: str):
 
 def get_true_cascade_dataset(name: str):
     """
-    加载真实级联数据集。
+    Load a real cascade dataset.
 
-    该函数使用预划分数据：
+    This function uses pre-split data:
         train_state.npy
         train_seed.npy
         valid_state.npy

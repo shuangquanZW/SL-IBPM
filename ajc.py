@@ -122,7 +122,7 @@ def evaluate(pred, true):
 
 
 def load_ajc_data(file_name: str, type_: str, seed: int = 0):
-    """加载AJC数据，支持按seed随机划分"""
+    """Load AJC data with seed-based random splits."""
     state = np.load(f"./data/{type_}/{file_name}/state.npy")
     seed_labels = np.load(f"./data/{type_}/{file_name}/seed.npy")
     edge_index = np.load(f"./data/{type_}/{file_name}/edge_index.npy")

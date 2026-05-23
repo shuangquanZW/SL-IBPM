@@ -1,13 +1,14 @@
 """
-多算法 Mask 鲁棒性实验 (GCNSI / HFSD / IVGD / MPNN / RSDGIN)
+Multi-algorithm mask robustness experiments (GCNSI / HFSD / IVGD / MPNN / RSDGIN)
 
-对应论文 Fig. 2 的鲁棒性实验，对多个基线方法进行不同观测比例下的性能测试。
-实验在多个 seed 下重复 mask 并取平均，确保结果稳定。
+Runs the robustness experiments corresponding to Fig. 2 and evaluates several
+baseline methods under different observation ratios.
+Experiments repeat masking across multiple seeds and average the results.
 
-用法:
+Usage:
     from baseline_mask_experiments import run_all_baselines_mask_robustness
 
-    # 运行所有基线的 mask 鲁棒性实验
+    # Run mask robustness experiments for all baselines.
     run_all_baselines_mask_robustness(
         algorithms=["gcnsi", "hfsd", "ivgd", "mpnn", "rdgin"],
         datasets=["karate", "jazz", "net_science", "cora_ml"],
@@ -27,7 +28,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from utils import load_data, SEEDS, compute_stats
 
-# ---- 导入各基线算法 ----
+# ---- Import baseline algorithms ----
 from gcnsi import (
     GCNSI,
     GCNSITrainer,
@@ -44,7 +45,7 @@ from ivgd import IVGD, IVGDTrainer
 from mpnn import ResGCN, ResGCNTrainer
 from rdgin import RSDGIN, RSDGINTrainer
 
-# ===================== 统一接口：各算法的训练与评估 =====================
+# ===================== Unified training/evaluation interfaces =====================
 
 
 def _run_gcnsi_mask_experiment(
@@ -55,7 +56,7 @@ def _run_gcnsi_mask_experiment(
     epochs: int,
     device: str,
 ):
-    """运行 GCNSI 的单个 mask 实验。"""
+    """Run one masked GCNSI experiment."""
     (
         train_loader,
         valid_loader,
@@ -66,7 +67,7 @@ def _run_gcnsi_mask_experiment(
         _,
     ) = load_data(file_name, type_, seed=seed)
 
-    # GCNSI 需要预处理（InputGenerator 依赖 num_nodes）
+    # GCNSI needs preprocessing; InputGenerator depends on num_nodes.
     generator = InputGenerator(edge_index=edge_index.to(device), num_nodes=num_nodes)
     train_loader = gcnsi_preprocess(train_loader, generator, device)
     valid_loader = gcnsi_preprocess(valid_loader, generator, device)
@@ -89,7 +90,7 @@ def _run_hfsd_mask_experiment(
     epochs: int,
     device: str,
 ):
-    """运行 HFSD 的单个 mask 实验。"""
+    """Run one masked HFSD experiment."""
     (
         train_loader,
         valid_loader,
@@ -100,7 +101,7 @@ def _run_hfsd_mask_experiment(
         _,
     ) = load_data(file_name, type_, seed=seed)
 
-    # HFSD 需要预处理（HFSDFeatureGenerator 依赖 edge_index 和 num_nodes）
+    # HFSD needs preprocessing; HFSDFeatureGenerator depends on edge_index and num_nodes.
     generator = HFSDFeatureGenerator(
         edge_index=edge_index.to(device), num_nodes=num_nodes
     )
@@ -125,7 +126,7 @@ def _run_ivgd_mask_experiment(
     epochs: int,
     device: str,
 ):
-    """运行 IVGD 的单个 mask 实验。"""
+    """Run one masked IVGD experiment."""
     (
         train_loader,
         valid_loader,
@@ -153,7 +154,7 @@ def _run_mpnn_mask_experiment(
     epochs: int,
     device: str,
 ):
-    """运行 MPNN (ResGCN) 的单个 mask 实验。"""
+    """Run one masked MPNN (ResGCN) experiment."""
     (
         train_loader,
         valid_loader,
@@ -181,7 +182,7 @@ def _run_rdgin_mask_experiment(
     epochs: int,
     device: str,
 ):
-    """运行 RSDGIN 的单个 mask 实验。"""
+    """Run one masked RSDGIN experiment."""
     (
         train_loader,
         valid_loader,
@@ -201,7 +202,7 @@ def _run_rdgin_mask_experiment(
     return auc, pre, rec, f1
 
 
-# 算法名称到实验函数的映射
+# Map algorithm names to experiment runners.
 ALGORITHM_RUNNERS = {
     "gcnsi": _run_gcnsi_mask_experiment,
     "hfsd": _run_hfsd_mask_experiment,
@@ -211,7 +212,7 @@ ALGORITHM_RUNNERS = {
 }
 
 
-# ===================== 核心：单个算法的 mask 鲁棒性分析 =====================
+# ===================== Core: mask robustness for one algorithm =====================
 
 
 def baseline_mask_robustness(
@@ -225,22 +226,22 @@ def baseline_mask_robustness(
     save_dir: str = "result/baseline_mask",
 ):
     """
-    对指定基线算法进行 Mask 鲁棒性分析。
+    Run mask robustness analysis for one baseline algorithm.
 
-    参数:
-        algorithm: 算法名称，可选 "gcnsi"/"hfsd"/"ivgd"/"mpnn"/"rdgin"
-        name: 数据集名称，如 "karate"
-        type_: 传播模型类型，如 "SIR"
-        mask_ratios: mask 比例列表，默认 [0.0, 0.1, ..., 0.9]
-        seeds: 随机种子列表，默认 [0,1,2,3,4]
-        epochs: 训练轮数
-        device: 计算设备
+    Args:
+        algorithm: Algorithm name; one of "gcnsi"/"hfsd"/"ivgd"/"mpnn"/"rdgin".
+        name: Dataset name, such as "karate".
+        type_: Propagation model type, such as "SIR".
+        mask_ratios: Mask ratios. Defaults to [0.0, 0.1, ..., 0.9].
+        seeds: Random seeds. Defaults to [0, 1, 2, 3, 4].
+        epochs: Number of training epochs.
+        device: Compute device.
 
-    返回:
+    Returns:
         result_dict: {
             "mask_ratios": [...],
-            "auc_mean": [...],   # 跨 seed 均值
-            "auc_std": [...],    # 跨 seed 标准差
+            "auc_mean": [...],   # cross-seed mean
+            "auc_std": [...],    # cross-seed std
             "f1_mean": [...],
             "f1_std": [...],
         }
@@ -258,7 +259,7 @@ def baseline_mask_robustness(
 
     runner = ALGORITHM_RUNNERS[algorithm]
 
-    # 先获取 num_nodes（用于计算 mask 节点数）
+    # First get num_nodes to compute the number of masked nodes.
     _, _, _, edge_index, num_nodes, _, _ = load_data(name, type_, seed=seeds[0])
 
     auc_means, auc_stds = [], []
@@ -270,7 +271,7 @@ def baseline_mask_robustness(
         seed_aucs, seed_f1s = [], []
 
         for seed in seeds:
-            # 生成该 seed 对应的 mask 节点（确保可复现）
+            # Generate the masked nodes for this seed, ensuring reproducibility.
             rng = np.random.RandomState(seed)
             if num_masked > 0:
                 masked_nodes = sorted(
@@ -279,7 +280,7 @@ def baseline_mask_robustness(
             else:
                 masked_nodes = None
 
-            # 运行该算法的单个实验
+            # Run one experiment for this algorithm.
             try:
                 auc, pre, rec, f1 = runner(
                     file_name=name,
@@ -298,7 +299,7 @@ def baseline_mask_robustness(
                 )
                 continue
 
-        # 跨 seed 统计
+        # Cross-seed statistics.
         auc_mean, auc_std = compute_stats(seed_aucs)
         f1_mean, f1_std = compute_stats(seed_f1s)
         auc_means.append(auc_mean)
@@ -308,7 +309,7 @@ def baseline_mask_robustness(
 
         print(
             f"  [{algorithm.upper()}] {name}-{type_} mask={mask_ratio:.1f}: "
-            f"AUC={auc_mean:.4f}±{auc_std:.4f}, F1={f1_mean:.4f}±{f1_std:.4f}"
+            f"AUC={auc_mean:.4f}+/-{auc_std:.4f}, F1={f1_mean:.4f}+/-{f1_std:.4f}"
         )
 
     result = {
@@ -319,7 +320,7 @@ def baseline_mask_robustness(
         "f1_std": f1_stds,
     }
 
-    # 保存结果到 CSV
+    # Save results to CSV.
     os.makedirs(save_dir, exist_ok=True)
     csv_path = f"{save_dir}/{algorithm}_{name}_{type_}_mask.csv"
     with open(csv_path, "w", newline="") as f:
@@ -335,12 +336,12 @@ def baseline_mask_robustness(
                     f"{f1_stds[i]:.4f}",
                 ]
             )
-    print(f"  结果已保存: {csv_path}")
+    print(f"  Results saved: {csv_path}")
 
     return result
 
 
-# ===================== 批量运行 =====================
+# ===================== Batch runner =====================
 
 
 def run_all_baselines_mask_robustness(
@@ -354,19 +355,19 @@ def run_all_baselines_mask_robustness(
     save_dir: str = "result/baseline_mask",
 ):
     """
-    批量运行多个基线算法在多个数据集上的 Mask 鲁棒性实验。
+    Run mask robustness experiments for multiple baselines and datasets.
 
-    参数:
-        algorithms: 算法列表，默认全部5个 ["gcnsi", "hfsd", "ivgd", "mpnn", "rdgin"]
-        datasets: 数据集列表，默认 ["karate", "jazz", "net_science", "cora_ml"]
-        model_type: 传播模型类型，默认 "SIR"
-        mask_ratios: mask 比例列表
-        seeds: 随机种子列表
-        epochs: 训练轮数
-        device: 计算设备
-        save_dir: 结果保存目录
+    Args:
+        algorithms: Algorithm list. Defaults to all five baselines.
+        datasets: Dataset list. Defaults to ["karate", "jazz", "net_science", "cora_ml"].
+        model_type: Propagation model type. Defaults to "SIR".
+        mask_ratios: Mask ratio list.
+        seeds: Random seed list.
+        epochs: Number of training epochs.
+        device: Compute device.
+        save_dir: Directory for saved results.
 
-    返回:
+    Returns:
         all_results: {
             algorithm_name: {
                 dataset_name: {
@@ -385,12 +386,12 @@ def run_all_baselines_mask_robustness(
         mask_ratios = [i / 10 for i in range(10)]
 
     print("=" * 70)
-    print("多算法 Mask 鲁棒性分析实验 (对应论文 Fig. 2)")
+    print("Multi-algorithm mask robustness experiments (corresponding to Fig. 2)")
     print("=" * 70)
-    print(f"算法: {algorithms}")
-    print(f"数据集: {datasets}")
-    print(f"传播模型: {model_type}")
-    print(f"Mask 比例: {mask_ratios}")
+    print(f"Algorithms: {algorithms}")
+    print(f"Datasets: {datasets}")
+    print(f"Propagation model: {model_type}")
+    print(f"Mask ratios: {mask_ratios}")
     print(f"Seeds: {seeds if seeds else SEEDS}")
     print(f"Epochs: {epochs}")
     print("=" * 70)
@@ -399,12 +400,12 @@ def run_all_baselines_mask_robustness(
 
     for alg in algorithms:
         print(f"\n{'='*70}")
-        print(f"算法: {alg.upper()}")
+        print(f"Algorithm: {alg.upper()}")
         print(f"{'='*70}")
         all_results[alg] = {}
 
         for dataset in datasets:
-            print(f"\n--- 数据集: {dataset} ---")
+            print(f"\n--- Dataset: {dataset} ---")
             result = baseline_mask_robustness(
                 algorithm=alg,
                 name=dataset,
@@ -417,13 +418,13 @@ def run_all_baselines_mask_robustness(
             )
             all_results[alg][dataset] = result
 
-    # 保存汇总结果（所有算法合并到一个 CSV）
+    # Save combined results for all algorithms to one CSV.
     _save_combined_results(
         all_results, algorithms, datasets, model_type, mask_ratios, save_dir
     )
 
     print("\n" + "=" * 70)
-    print("所有 Mask 鲁棒性实验完成！")
+    print("All mask robustness experiments completed.")
     print("=" * 70)
     return all_results
 
@@ -436,19 +437,19 @@ def _save_combined_results(
     mask_ratios: list,
     save_dir: str,
 ):
-    """将所有算法的 mask 鲁棒性结果保存为一个汇总 CSV。"""
+    """Save all algorithm mask robustness results to one summary CSV."""
     os.makedirs(save_dir, exist_ok=True)
     csv_path = f"{save_dir}/all_baselines_{model_type}_mask_summary.csv"
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        # 写入表头
+        # Write header.
         header = ["dataset", "mask_ratio"]
         for alg in algorithms:
             header += [f"{alg}_auc", f"{alg}_f1"]
         writer.writerow(header)
 
-        # 按数据集和 mask 比例写入数据
+        # Write rows by dataset and mask ratio.
         for dataset in datasets:
             for i, mr in enumerate(mask_ratios):
                 row = [dataset, f"{mr:.1f}"]
@@ -460,10 +461,10 @@ def _save_combined_results(
                     ]
                 writer.writerow(row)
 
-    print(f"\n汇总结果已保存: {csv_path}")
+    print(f"\nSummary results saved: {csv_path}")
 
 
-# ===================== 单独运行某个算法的便捷入口 =====================
+# ===================== Convenience entry points for individual algorithms =====================
 
 
 def run_gcnsi_mask(
@@ -475,7 +476,7 @@ def run_gcnsi_mask(
     device: str = "cuda:0",
     save_dir: str = "result/baseline_mask",
 ):
-    """便捷函数：运行 GCNSI 的 mask 鲁棒性实验。"""
+    """Convenience function for GCNSI mask robustness experiments."""
     if datasets is None:
         datasets = ["karate", "jazz", "net_science", "cora_ml"]
     results = {}
@@ -502,7 +503,7 @@ def run_hfsd_mask(
     device: str = "cuda:0",
     save_dir: str = "result/baseline_mask",
 ):
-    """便捷函数：运行 HFSD 的 mask 鲁棒性实验。"""
+    """Convenience function for HFSD mask robustness experiments."""
     if datasets is None:
         datasets = ["karate", "jazz", "net_science", "cora_ml"]
     results = {}
@@ -529,7 +530,7 @@ def run_ivgd_mask(
     device: str = "cuda:0",
     save_dir: str = "result/baseline_mask",
 ):
-    """便捷函数：运行 IVGD 的 mask 鲁棒性实验。"""
+    """Convenience function for IVGD mask robustness experiments."""
     if datasets is None:
         datasets = ["karate", "jazz", "net_science", "cora_ml"]
     results = {}
@@ -556,7 +557,7 @@ def run_mpnn_mask(
     device: str = "cuda:0",
     save_dir: str = "result/baseline_mask",
 ):
-    """便捷函数：运行 MPNN 的 mask 鲁棒性实验。"""
+    """Convenience function for MPNN mask robustness experiments."""
     if datasets is None:
         datasets = ["karate", "jazz", "net_science", "cora_ml"]
     results = {}
@@ -583,7 +584,7 @@ def run_rdgin_mask(
     device: str = "cuda:0",
     save_dir: str = "result/baseline_mask",
 ):
-    """便捷函数：运行 RSDGIN 的 mask 鲁棒性实验。"""
+    """Convenience function for RSDGIN mask robustness experiments."""
     if datasets is None:
         datasets = ["karate", "jazz", "net_science", "cora_ml"]
     results = {}
@@ -601,10 +602,10 @@ def run_rdgin_mask(
     return results
 
 
-# ===================== 主入口 =====================
+# ===================== Main entry point =====================
 
 if __name__ == "__main__":
-    # 示例：运行所有基线的 mask 鲁棒性实验
+    # Example: run mask robustness experiments for all baselines.
     run_all_baselines_mask_robustness(
         algorithms=["gcnsi", "hfsd", "ivgd", "mpnn", "rdgin"],
         datasets=["karate", "jazz", "net_science", "cora_ml"],

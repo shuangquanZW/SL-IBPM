@@ -6,12 +6,12 @@ from util_figure import set_global_style, get_style_scheme, save_figure
 def plot_partial():
     set_global_style()
 
-    # === 读取 baselines 数据 ===
+    # === Read baseline data ===
     baselines = pd.read_csv(
         "../result/baseline_mask/all_baselines_SIR_mask_summary.csv"
     )
 
-    # === 读取 SL-IBPM 各数据集 robustness 数据 ===
+    # === Read SL-IBPM robustness data for each dataset ===
     slibpm_files = {
         "karate": "../result/mask_robustness/karate_SIR_mask_robustness.csv",
         "jazz": "../result/mask_robustness/jazz_SIR_mask_robustness.csv",
@@ -25,7 +25,7 @@ def plot_partial():
     datasets_key = ["karate", "jazz", "net_science", "cora_ml"]
     datasets = ["Karate", "Jazz", "NetScience", "CoraML"]
 
-    # 方法 -> baselines csv 中的列前缀
+    # Method -> column prefix in the baseline CSV.
     baseline_prefix = {
         "GCNSI": "gcnsi",
         "MPNN": "mpnn",
@@ -35,7 +35,7 @@ def plot_partial():
     }
 
     def get_method_f1(method, dkey):
-        """返回 f1_array 长度=len(mask)"""
+        """Return an F1 array with length len(mask)."""
         if method == "SL-IBPM":
             df = slibpm_data[dkey].sort_values("mask_ratio")
             return df["f1_mean"].to_numpy()
@@ -44,7 +44,7 @@ def plot_partial():
             p = baseline_prefix[method]
             return sub[f"{p}_f1"].to_numpy()
 
-    # === 样式 ===
+    # === Style ===
     palette, markers, _ = get_style_scheme(len(methods), "line")
     styles = {
         method: {
@@ -86,7 +86,7 @@ def plot_partial():
         ax.grid(alpha=0.3, linestyle="--")
         ax.minorticks_on()
 
-    # 统一图例（仅方法）
+    # Shared legend with methods only.
     fig.legend(
         handles_collected,
         labels_collected,

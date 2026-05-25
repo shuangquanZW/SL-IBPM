@@ -11,7 +11,8 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from utils import SEEDS, compute_stats, save_csv, load_data
+from cascade_experiment import run_cascade_experiment, run_epoch_sweep
+from utils import compute_stats
 
 
 class BiasedEstimator(nn.Module):
@@ -214,7 +215,7 @@ class IBPMTrainer:
         return self.test_step(test_loader, edge_index, mask)
 
 
-# ===================== Cross-seed aggregation utilities =====================
+# ===================== 跨seed聚合工具 =====================
 def aggregate_histories(histories):
     if not histories:
         return {}
@@ -271,64 +272,34 @@ def main(
     reduction="mean",
     alpha=0.1,
     weight_decay=0.0,
-    device="cuda:0",
-    epochs=10,
-    history_dir="result/ablation_history",
+    device="cuda:2",
+    epochs=100,
+    output_csv=None,
+    history_dir=None,
 ):
-    file_list = ["karate", "jazz", "net_science", "cora_ml", "power_grid", "lastFM"]
-    type_list = ["SIR", "SI", "LT", "IC"]
-    results = {}
-
-    for name in file_list:
-        for type_ in type_list:
-            all_histories = []
-            auc_list, precision_list, recall_list, f1_list = [], [], [], []
-            for seed in SEEDS:
-                (
-                    train_loader,
-                    valid_loader,
-                    test_loader,
-                    edge_index,
-                    num_nodes,
-                    num_edges,
-                    num_states,
-                ) = load_data(name, type_, seed=seed)
-                torch.manual_seed(seed)
-                np.random.seed(seed)
-                model = SL_IBPM_WoDampAggr(num_nodes, num_edges, num_states)
-                trainer = IBPMTrainer(
-                    model,
-                    lr=lr,
-                    reduction=reduction,
-                    alpha=alpha,
-                    weight_decay=weight_decay,
-                    device=device,
-                )
-                history = trainer.fit(
-                    train_loader, valid_loader, test_loader, edge_index, epochs=epochs
-                )
-                all_histories.append(history)
-                roc, precision, recall, f1 = trainer.evaluate(test_loader, edge_index)
-                auc_list.append(roc)
-                precision_list.append(precision)
-                recall_list.append(recall)
-                f1_list.append(f1)
-
-            agg = aggregate_histories(all_histories)
-            save_history_csv(agg, f"{history_dir}/wo_damp_aggr_{name}_{type_}.csv")
-
-            results[(name, type_)] = {
-                "auc_mean": compute_stats(auc_list)[0],
-                "auc_std": compute_stats(auc_list)[1],
-                "pre_mean": compute_stats(precision_list)[0],
-                "pre_std": compute_stats(precision_list)[1],
-                "rec_mean": compute_stats(recall_list)[0],
-                "rec_std": compute_stats(recall_list)[1],
-                "f1_mean": compute_stats(f1_list)[0],
-                "f1_std": compute_stats(f1_list)[1],
-            }
-    save_csv(results, "result/wo_damp_aggr.csv")
+    result_key = "wo_damp_aggr"
+    output_csv = output_csv or f"result/{result_key}_cascade_e{epochs}.csv"
+    history_dir = history_dir or f"result/ablation_history_cascade_e{epochs}"
+    return run_cascade_experiment(
+        model_factory=lambda num_nodes, num_edges, num_states: SL_IBPM_WoDampAggr(
+            num_nodes, num_edges, num_states
+        ),
+        trainer_factory=lambda model: IBPMTrainer(
+            model,
+            lr=lr,
+            reduction=reduction,
+            alpha=alpha,
+            weight_decay=weight_decay,
+            device=device,
+        ),
+        aggregate_histories=aggregate_histories,
+        save_history_csv=save_history_csv,
+        result_key=result_key,
+        output_csv=output_csv,
+        epochs=epochs,
+        history_dir=history_dir,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    run_epoch_sweep(main)
